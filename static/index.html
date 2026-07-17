@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>客服考试结果多维看板</title>
+  <link rel="stylesheet" href="styles.css?v=2026-07-17.28">
+</head>
+<body>
+  <!-- 登录遮罩（本地验证用，上云替换为 Google SSO） -->
+  <div class="auth-mask" id="authMask">
+    <div class="auth-card">
+      <h2 data-i18n="login_title">登录考试看板</h2>
+      <div class="role-tabs">
+        <button data-role="admin" class="active" id="roleAdmin" data-i18n="role_admin">管理员</button>
+        <button data-role="rep" id="roleRep" data-i18n="role_rep">员工</button>
+      </div>
+      <div id="adminFields">
+        <div class="field"><label data-i18n="login_pw">管理员密码</label>
+          <div class="pw-wrap"><input type="password" id="loginPw" placeholder="admin123"><button type="button" class="pw-toggle" data-target="loginPw" aria-label="显示密码" title="显示/隐藏密码"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      </div>
+      <div id="repFields" style="display:none">
+        <div class="field"><label data-i18n="login_name">你的姓名</label>
+          <input list="repNames" id="loginName" placeholder="输入你的姓名" autocomplete="off">
+          <datalist id="repNames"></datalist>
+        </div>
+        <div class="field"><label data-i18n="login_pw_rep">密码</label>
+          <div class="pw-wrap"><input type="password" id="loginPwRep" placeholder="默认=工号" autocomplete="off"><button type="button" class="pw-toggle" data-target="loginPwRep" aria-label="显示密码" title="显示/隐藏密码"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      </div>
+      <button class="btn block" id="loginBtn" data-i18n="login_btn">登录</button>
+      <div class="dev-note" id="loginErr" style="display:none;color:#e76f51"></div>
+      <div class="dev-note" data-i18n="login_dev">本地验证模式：管理员默认密码 admin123；员工输入自己姓名即可，仅可查看本人记录。上云后改为 Google 账号登录。</div>
+    </div>
+  </div>
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <h1 id="appTitle">客服考试结果多维看板</h1>
+    <div class="right">
+      <span class="badge" id="backendBadge">backend</span>
+      <span id="userBar" style="display:none">
+        <span id="userName" class="user-name"></span>
+        <button class="btn small" id="changePwBtn" data-i18n="rep_change_pw" style="display:none">修改密码</button>
+        <button class="btn small" id="logoutBtn" data-i18n="logout">退出</button>
+      </span>
+      <div class="lang-toggle">
+        <button data-lang="zh" class="active">中文</button>
+        <button data-lang="en">EN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导航 -->
+  <div class="nav">
+    <button data-view="overview" class="active" data-roles="admin" data-i18n="nav.overview">总览</button>
+    <button data-view="individual" data-roles="admin" data-i18n="nav.individual">个人视图</button>
+    <button data-view="batch" data-roles="admin" data-i18n="nav.batch">批次视图</button>
+    <button data-view="period" data-roles="admin" data-i18n="nav.period">时间段视图</button>
+    <button data-view="questions" data-roles="admin" data-i18n="nav.questions">题库</button>
+    <button data-view="exams" data-roles="admin" data-i18n="nav.exams">考试管理</button>
+    <button data-view="manage" data-roles="admin" data-i18n="nav.manage">数据管理</button>
+    <button data-view="config" data-roles="admin" data-i18n="nav.config">系统设置</button>
+    <button data-view="points" data-roles="admin" data-i18n="nav.points">积分</button>
+    <button data-view="materials" data-roles="admin,rep" data-i18n="nav.materials">资料库</button>
+    <button data-view="recommend" data-roles="rep" data-i18n="nav.recommend">智能推荐</button>
+    <button data-view="mine" data-roles="rep" data-i18n="nav.mine">我的考试</button>
+    <button data-view="rep-points" data-roles="rep" data-i18n="nav.rep_points">我的积分</button>
+  </div>
+
+  <div class="container">
+
+    <!-- 总览 -->
+    <section id="view-overview" class="view active">
+      <div class="kpi-grid" id="ov-cards"></div>
+      <div class="panel"><h3 data-i18n="ov_session_avg">各批次平均总分</h3>
+        <div class="chart-wrap"><canvas id="ov-chart"></canvas></div></div>
+      <div class="panel"><h3 id="sr-title" data-i18n="sr_title">各客服得分率</h3>
+        <div class="filters" style="margin-bottom:8px">
+          <div class="field"><label data-i18n="sr_scope_label">统计方式</label>
+            <select id="sr-scope">
+              <option value="avg" data-i18n="sr_scope_avg">平均得分率</option>
+              <option value="session" data-i18n="sr_scope_session">按场次</option>
+            </select></div>
+          <div class="field" id="sr-session-field" style="display:none"><label data-i18n="sr_session">选择场次</label>
+            <select id="sr-session"></select></div>
+          <button id="sr-recompute" class="btn" data-i18n="sr_recompute">重算历史成绩</button>
+        </div>
+        <div class="muted" id="sr-line" style="margin-bottom:6px"></div>
+        <div class="chart-wrap"><canvas id="sr-chart"></canvas></div>
+        <div class="muted" id="sr-hint" data-i18n="sr_hint" style="margin-top:6px"></div>
+      </div>
+    </section>
+
+    <!-- 个人视图 -->
+    <section id="view-individual" class="view">
+      <div class="filters">
+        <div class="field"><label data-i18n="iv_select">选择客服</label>
+          <select id="iv-rep"></select></div>
+      </div>
+      <div id="iv-exam-scope" class="exams-scope" style="display:none">
+        <div class="scope-head">
+          <label class="scope-label" for="iv-exam-pick" data-i18n="iv_scope_pick">查看考试：</label>
+          <select id="iv-exam-pick"></select>
+          <label class="chk inline"><input type="checkbox" id="iv-multi-toggle"> <span data-i18n="iv_multi_toggle">多场综合对比</span></label>
+          <a href="#" id="iv-sel-all" class="link" data-i18n="iv_sel_all" style="display:none">全选</a>
+          <a href="#" id="iv-sel-none" class="link" data-i18n="iv_sel_none" style="display:none">清除</a>
+        </div>
+        <div id="iv-exam-list" class="chk-group" style="display:none"></div>
+        <div class="scope-tip muted" data-i18n="iv_scope_tip">默认显示最近一场考试；用上方下拉切换查看某一场，或勾「多场综合对比」选多场合并统计。</div>
+      </div>
+      <div id="iv-body"><div class="empty" data-i18n="iv_please">请选择一位客服</div></div>
+    </section>
+
+    <!-- 批次视图 -->
+    <section id="view-batch" class="view">
+      <div class="filters">
+        <div class="field"><label data-i18n="bv_select">选择考试批次</label>
+          <select id="bv-session"></select></div>
+      </div>
+      <div id="bv-body"><div class="empty" data-i18n="bv_please">请选择考试批次</div></div>
+    </section>
+
+    <!-- 时间段视图 -->
+    <section id="view-period" class="view">
+      <div class="filters">
+        <div class="field"><label data-i18n="pk_start">开始日期</label>
+          <input type="date" id="pk-start"></div>
+        <div class="field"><label data-i18n="pk_end">结束日期</label>
+          <input type="date" id="pk-end"></div>
+        <button class="btn" id="pk-query" data-i18n="pk_query">查询</button>
+      </div>
+      <div id="pk-body"><div class="empty" data-i18n="pk_please">请选择时间范围</div></div>
+    </section>
+
+    <!-- 数据管理 -->
+    <section id="view-manage" class="view">
+      <div class="row-between" style="align-items:flex-start;margin-bottom:6px">
+        <div class="section-title" data-i18n="mg_title">数据管理</div>
+        <button class="btn danger" id="mg-reset-all" data-i18n="mg_reset_all">清空全部数据</button>
+      </div>
+      <div class="muted" data-i18n="mg_reset_hint" style="margin-bottom:10px"></div>
+
+      <div class="mg-tabs">
+        <button class="mg-tab active" data-tab="reps" data-i18n="mg_reps">客服管理</button>
+        <button class="mg-tab" data-tab="sessions" data-i18n="mg_sessions">考试批次管理</button>
+        <button class="mg-tab" data-tab="results" data-i18n="mg_results">成绩管理</button>
+        <button class="mg-tab" data-tab="banks" data-i18n="qbm_title">考题 PPT 管理</button>
+      </div>
+
+      <div class="mg-tab-body">
+        <div class="mg-tab-panel active" data-tab="reps">
+          <div class="panel">
+            <div class="row-between" style="align-items:flex-start;margin-bottom:10px">
+              <div>
+                <button class="btn" onclick="App.addRep()" data-i18n="mg_add">添加</button>
+                <button class="btn secondary" id="mg-import-reps-btn" data-i18n="mg_import">批量导入Excel</button>
+                <button class="btn danger" id="mg-batch-del-reps-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+                <button class="btn secondary" id="mg-batch-status-btn" data-i18n="mg_batch_status" style="display:none">批量修改状态</button>
+                <select id="mg-batch-status-sel" style="display:none">
+                  <option value="active" data-i18n="mg_status_active">在职</option>
+                  <option value="left" data-i18n="mg_status_left">离职</option>
+                </select>
+                <input type="file" id="mg-reps-file" accept=".xlsx,.xls" style="display:none">
+              </div>
+              <div class="muted" id="mg-reps-hint" data-i18n="mg_import_hint" style="max-width:46%"></div>
+            </div>
+            <div id="mg-reps-body" style="margin-top:12px;"></div>
+          </div>
+        </div>
+
+        <div class="mg-tab-panel" data-tab="sessions">
+          <div class="panel">
+            <div class="row-between" style="margin-bottom:10px">
+              <div class="muted" data-i18n="mg_sessions_hint" style="max-width:66%"></div>
+              <div>
+                <button class="btn danger" id="mg-batch-del-sessions-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+                <button class="btn secondary" id="mg-upload-session-btn" data-i18n="mg_upload_score">上传成绩Excel</button>
+                <button class="btn" onclick="App.addSession()" data-i18n="mg_add_shell">手动建批次</button>
+              </div>
+            </div>
+            <div id="mg-sessions-body" style="margin-top:12px;"></div>
+          </div>
+        </div>
+
+        <div class="mg-tab-panel" data-tab="results">
+          <div class="panel">
+            <div class="row-between" style="margin-bottom:10px">
+              <div class="muted" data-i18n="up_hint" style="max-width:70%"></div>
+              <div>
+                <button class="btn danger" id="mg-batch-del-res-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+                <button class="btn secondary" id="mg-reset-results" data-i18n="mg_reset_results">仅清空成绩+批次</button>
+                <button class="btn" id="mg-upload-btn" data-i18n="mg_upload">上传成绩Excel</button>
+              </div>
+            </div>
+            <div class="filters">
+              <div class="field"><label data-i18n="filter_rep">按客服</label><select id="mg-res-rep"></select></div>
+              <div class="field"><label data-i18n="filter_session">按批次</label><select id="mg-res-session"></select></div>
+              <div class="field"><label data-i18n="filter_start">起始</label><input type="date" id="mg-res-start"></div>
+              <div class="field"><label data-i18n="filter_end">结束</label><input type="date" id="mg-res-end"></div>
+              <div class="field"><label data-i18n="filter_pass">通过状态</label>
+                <select id="mg-res-pass">
+                  <option value="" data-i18n="filter_all">全部</option>
+                  <option value="1" data-i18n="filter_pass_only">仅通过</option>
+                  <option value="0" data-i18n="filter_fail_only">仅未通过</option>
+                </select></div>
+              <button class="btn" onclick="App.queryResults()" data-i18n="query">查询</button>
+              <button class="btn secondary" onclick="App.addResult()" data-i18n="mg_add">添加</button>
+            </div>
+            <div id="mg-res-body"></div>
+          </div>
+        </div>
+
+        <div class="mg-tab-panel" data-tab="banks">
+          <div class="panel">
+            <div class="row-between" style="margin-bottom:10px">
+              <div class="muted" data-i18n="qbm_hint" style="max-width:70%"></div>
+              <div>
+                <button class="btn danger" id="mg-batch-del-banks-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+                <button class="btn secondary" id="mg-upload-ppt-btn2" data-i18n="up_ppt_title">上传考题PPT</button>
+                <button class="btn secondary" id="qbm-refresh" data-i18n="qbm_refresh">刷新</button>
+              </div>
+            </div>
+            <div id="mg-banks-body"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 题库（管理员） -->
+  <section id="view-questions" class="view">
+    <div class="panel">
+      <div class="row-between">
+        <div class="section-title" data-i18n="qb_title">题库</div>
+        <div>
+          <button class="btn" id="qb-add" data-i18n="qb_add">新增题目</button>
+          <button class="btn secondary" id="qb-import" data-i18n="qb_import">导入Excel</button>
+          <button class="btn secondary" id="qb-export" data-i18n="qb_export">导出Excel</button>
+          <input type="file" id="qb-file" accept=".xlsx" style="display:none">
+        </div>
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <div class="field"><label data-i18n="qb_type">题型</label>
+          <select id="qb-filter-type">
+            <option value="" data-i18n="filter_all">全部</option>
+            <option value="single" data-i18n="qb_single">单选</option>
+            <option value="multiple" data-i18n="qb_multiple">多选</option>
+            <option value="judge" data-i18n="qb_judge">判断</option>
+            <option value="essay" data-i18n="qb_essay">简答</option>
+          </select></div>
+        <div class="field"><label data-i18n="qb_kw">关键词</label><input id="qb-kw" placeholder="题面关键词"></div>
+        <button class="btn" id="qb-query" data-i18n="query">查询</button>
+      </div>
+      <div id="qb-body"></div>
+    </div>
+  </section>
+
+  <!-- 考试管理（管理员） -->
+  <section id="view-exams" class="view">
+    <div class="panel">
+      <div class="row-between">
+        <div class="section-title" data-i18n="ex_title">考试管理</div>
+        <button class="btn" id="ex-add" data-i18n="ex_add">新建试卷</button>
+      </div>
+      <div id="ex-body"></div>
+    </div>
+    <div class="panel" id="ex-detail" style="display:none"></div>
+  </section>
+
+  <!-- 我的考试（客服） -->
+  <section id="view-mine" class="view">
+    <div id="mine-body"></div>
+  </section>
+
+  <!-- 我的积分（客服） -->
+  <section id="view-rep-points" class="view">
+    <div class="panel">
+      <div class="section-title" data-i18n="rpt_title">我的积分</div>
+      <div id="rpt-year-sel" style="margin-bottom:12px">
+        <select id="rpt-year"></select>
+      </div>
+      <div class="rpt-cards">
+        <div class="card">
+          <div data-i18n="rpt_year_total">年度累计</div>
+          <div id="rpt-year-val" class="val"></div>
+        </div>
+        <div class="card">
+          <div data-i18n="rpt_year_target">年度达标线</div>
+          <div id="rpt-year-target-val" class="val"></div>
+        </div>
+        <div class="card" id="rpt-year-status">
+          <div data-i18n="rpt_year_status">年度状态</div>
+          <div id="rpt-year-status-val" class="val"></div>
+        </div>
+        <div class="card">
+          <div data-i18n="rpt_period_total">当前周期累计</div>
+          <div id="rpt-period-val" class="val"></div>
+        </div>
+        <div class="card">
+          <div data-i18n="rpt_period_target">当前周期目标</div>
+          <div id="rpt-period-target-val" class="val"></div>
+        </div>
+        <div class="card" id="rpt-period-status">
+          <div data-i18n="rpt_period_status">当前周期状态</div>
+          <div id="rpt-period-status-val" class="val"></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="section-title" data-i18n="rpt_quarter_detail">季度明细</div>
+      <div class="rpt-qgrid">
+        <div><span data-i18n="pt_q1">Q1</span>: <b id="rpt-q1">0</b></div>
+        <div><span data-i18n="pt_q2">Q2</span>: <b id="rpt-q2">0</b></div>
+        <div><span data-i18n="pt_q3">Q3</span>: <b id="rpt-q3">0</b></div>
+        <div><span data-i18n="pt_q4">Q4</span>: <b id="rpt-q4">0</b></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="section-title" data-i18n="pt_log_title">积分记录</div>
+      <div id="rpt-log"></div>
+    </div>
+  </section>
+
+  <!-- 系统设置（管理员） -->
+  <section id="view-config" class="view">
+    <div class="panel">
+      <div class="section-title" data-i18n="cfg_title">系统设置</div>
+      <div class="muted" data-i18n="cfg_hint" style="margin:6px 0 14px"></div>
+      <div class="cfg-grid">
+        <div class="field"><label data-i18n="cfg_pass_line">及格线比例（得分率 ≥）</label>
+          <input type="number" step="0.01" min="0" max="1" id="cfg-pass-line"></div>
+        <div class="field"><label data-i18n="cfg_points_threshold">积分达标阈值</label>
+          <input type="number" step="1" min="0" id="cfg-threshold"></div>
+        <div class="field"><label data-i18n="cfg_participate">参与基础分</label>
+          <input type="number" step="1" min="0" id="cfg-participate"></div>
+        <div class="field"><label data-i18n="cfg_material">资料学完分</label>
+          <input type="number" step="1" min="0" id="cfg-material"></div>
+        <div class="field"><label data-i18n="cfg_mini_quiz">小测通过分</label>
+          <input type="number" step="1" min="0" id="cfg-mini-quiz"></div>
+        <div class="field"><label data-i18n="cfg_period">周期目标粒度</label>
+          <select id="cfg-period">
+            <option value="month" data-i18n="cfg_period_month">按月</option>
+            <option value="quarter" data-i18n="cfg_period_quarter">按季</option>
+          </select></div>
+        <div class="field"><label data-i18n="cfg_period_target">周期目标积分（0=不启用）</label>
+          <input type="number" step="1" min="0" id="cfg-period-target"></div>
+        <div class="field"><label data-i18n="cfg_rec_top">推荐弱项数量</label>
+          <input type="number" step="1" min="1" id="cfg-rec-top"></div>
+        <div class="field"><label data-i18n="cfg_rec_quiz">小测题量</label>
+          <input type="number" step="1" min="1" id="cfg-rec-quiz"></div>
+      </div>
+      <div class="muted" data-i18n="cfg_pass_tiers" style="margin:10px 0 6px"></div>
+      <div id="cfg-pass-tiers" class="cfg-tiers"></div>
+      <div style="margin-top:14px">
+        <button class="btn" id="cfg-save" data-i18n="cfg_save">保存设置</button>
+      </div>
+    </div>
+
+    <!-- 修改管理员密码 -->
+    <div class="panel" style="margin-top:16px">
+      <div class="section-title" data-i18n="cfg_change_pw">修改管理员密码</div>
+      <div class="field"><label data-i18n="cfg_current_pw">当前密码</label>
+        <div class="pw-wrap"><input type="password" id="cfg-current-pw"><button type="button" class="pw-toggle" data-target="cfg-current-pw" aria-label="显示密码" title="显示/隐藏密码"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      <div class="field"><label data-i18n="cfg_new_pw">新密码</label>
+        <div class="pw-wrap"><input type="password" id="cfg-new-pw"><button type="button" class="pw-toggle" data-target="cfg-new-pw" aria-label="显示密码" title="显示/隐藏密码"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      <div class="field"><label data-i18n="cfg_safe_key">安全密钥</label>
+        <div class="pw-wrap"><input type="password" id="cfg-safe-key"><button type="button" class="pw-toggle" data-target="cfg-safe-key" aria-label="显示密码" title="显示/隐藏密码"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+      <div style="margin-top:12px">
+        <button class="btn" id="cfg-change-pw" data-i18n="cfg_confirm">确认修改</button>
+      </div>
+    </div>
+
+    <!-- 知识维度管理（保留将来修改余地：随时增/改名/删） -->
+    <div class="panel" style="margin-top:16px">
+      <div class="row-between" style="margin-bottom:10px">
+        <div class="section-title" data-i18n="dim_title">知识维度管理</div>
+        <div>
+          <button class="btn danger" id="dim-batch-del-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+          <button class="btn" id="dim-add" data-i18n="dim_add">新增维度</button>
+        </div>
+      </div>
+      <div class="muted" data-i18n="dim_hint" style="margin-bottom:10px"></div>
+      <div id="dim-body"></div>
+    </div>
+  </section>
+
+  <!-- 积分（管理员） -->
+  <section id="view-points" class="view">
+    <div class="panel">
+      <div class="row-between" style="align-items:flex-start;margin-bottom:10px">
+        <div class="section-title" data-i18n="pt_title">客服积分</div>
+        <div class="filters">
+          <div class="field"><label data-i18n="pt_year">年度</label>
+            <select id="pt-year"></select></div>
+          <div class="field"><label data-i18n="pt_filter">筛选</label>
+            <select id="pt-filter">
+              <option value="all" data-i18n="filter_all">全部</option>
+              <option value="pass" data-i18n="pt_meet">已达标</option>
+              <option value="fail" data-i18n="pt_not_meet">未达标</option>
+            </select></div>
+        </div>
+      </div>
+      <div class="muted" id="pt-summary" style="margin-bottom:10px"></div>
+      <div id="pt-body"></div>
+    </div>
+  </section>
+
+  <!-- 学习资料库（管理员建 / 双方看） -->
+  <section id="view-materials" class="view">
+    <div class="panel" id="mat-admin-panel" style="display:none">
+      <div class="row-between" style="margin-bottom:10px">
+        <div class="section-title" data-i18n="mat_title">学习资料库</div>
+        <div>
+          <button class="btn danger" id="mat-batch-del-btn" data-i18n="mg_batch_del" style="display:none">批量删除</button>
+          <button class="btn" id="mat-add" data-i18n="mat_add">新增资料</button>
+        </div>
+      </div>
+      <div class="muted" data-i18n="mat_hint" style="margin-bottom:10px"></div>
+      <div id="mat-admin-body"></div>
+    </div>
+    <div class="panel" id="mat-rep-panel">
+      <div class="section-title" data-i18n="mat_study">学习资料</div>
+      <div id="mat-rep-body" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- 智能推荐（客服） -->
+  <section id="view-recommend" class="view">
+    <div class="panel">
+      <div class="section-title" data-i18n="rec_title">智能推荐</div>
+      <div class="muted" id="rec-intro" data-i18n="rec_hint" style="margin:6px 0 12px"></div>
+      <div id="rec-body"></div>
+    </div>
+  </section>
+
+  <!-- 模态框 -->
+  <div class="modal-mask" id="modalMask">
+    <div class="modal">
+      <h3 id="modalTitle">标题</h3>
+      <div id="modalBody"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" id="modalCancel" data-i18n="cancel">取消</button>
+        <button class="btn" id="modalSave" data-i18n="save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" style="display:none;position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+       background:#1a1a2e;color:#fff;padding:10px 20px;border-radius:8px;z-index:99;"></div>
+
+  <script src="chart.umd.js"></script>
+  <script src="i18n.js?v=2026-07-17.28"></script>
+  <script src="app.js?v=2026-07-17.28"></script>
+</body>
+</html>
