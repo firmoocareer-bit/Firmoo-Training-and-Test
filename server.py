@@ -36,7 +36,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.33"
+BUILD_STAMP = "2026-07-17.34"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -49,7 +49,11 @@ ALLOWED_ORIGINS = []
 for o in FRONTEND_URL.split(","):
     o = o.strip()
     if o:
+        # Render fromService(property=host) 只给服务名（如 firmoo-exam-frontend），
+        # 需补成完整 https://<name>.onrender.com 才与浏览器实际 origin 匹配。
         if not o.startswith(("http://", "https://")):
+            if "." not in o:
+                o = o + ".onrender.com"
             o = "https://" + o
         ALLOWED_ORIGINS.append(o)
 
@@ -133,7 +137,8 @@ def api_me():
 @app.route("/api/version", methods=["GET"])
 def api_version():
     import storage as _st
-    return ok({"backend": BACKEND, "build": BUILD_STAMP,
+    return ok({"backend": "postgres" if "Postgres" in storage.__class__.__name__ else "sqlite",
+                "build": BUILD_STAMP,
                "storage_class": storage.__class__.__name__,
                "has_database_url": bool(os.environ.get("DATABASE_URL")),
                "database_url_len": len(os.environ.get("DATABASE_URL", "")),
