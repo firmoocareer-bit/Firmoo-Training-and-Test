@@ -8,17 +8,28 @@
   let state = { reps: [], sessions: [] };
   let me = { role: "anon" };  // 当前登录用户：anon / admin / rep
 
-  // 全局错误条：任何未捕获的前端脚本错误都会以红字显示，便于排查“页面空白”类问题
+  // 全局错误条：任何未捕获的前端脚本错误都会以红字显示，便于排查“页面空白”类问题。
+  // 网络类错误（Render 免费版休眠/网络抖动常见的 Failed to fetch）用温和文案，且自动消失，
+  // 避免红色条永久停留在底部恐吓用户。
+  let _errTimer = null;
   function showGlobalError(msg) {
+    const isNet = /Failed to fetch|NetworkError|Network request failed|load failed|timeout/i.test(msg || "");
     let bar = document.getElementById("global-error");
     if (!bar) {
       bar = document.createElement("div");
       bar.id = "global-error";
       bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;background:#c0392b;color:#fff;" +
-        "padding:8px 12px;font-size:13px;z-index:99999;white-space:pre-wrap;box-shadow:0 -2px 8px rgba(0,0,0,.3)";
+        "padding:8px 12px;font-size:13px;z-index:99999;white-space:pre-wrap;box-shadow:0 -2px 8px rgba(0,0,0,.3);transition:opacity .4s";
       document.body.appendChild(bar);
     }
-    bar.textContent = "⚠ 页面脚本错误：" + msg;
+    bar.textContent = isNet ? "⚠ 网络连接中断，请稍后重试" : "⚠ 页面脚本错误：" + msg;
+    bar.style.opacity = "1";
+    bar.style.display = "block";
+    if (_errTimer) clearTimeout(_errTimer);
+    _errTimer = setTimeout(() => {
+      bar.style.opacity = "0";
+      setTimeout(() => { if (bar) bar.style.display = "none"; }, 400);
+    }, isNet ? 4000 : 8000);
   }
   window.addEventListener("error", (e) => showGlobalError((e && e.message) || String(e.error || e)));
   window.addEventListener("unhandledrejection", (e) => showGlobalError((e && e.reason && e.reason.message) || String(e && e.reason)));
@@ -1465,8 +1476,8 @@
     await checkAuth();
     applyLang();
     if (me.role !== "anon") {
-      if (me.role === "rep") { switchView("mine"); renderMine(); }
-      else { switchView("overview"); renderOverview(); renderQuestionBanks().catch((e) => console.error("banks-init", e)); }
+      if (me.role === "rep") { switchView("mine"); renderMine().catch((e) => console.error("mine-init", e)); }
+      else { switchView("overview"); renderOverview().catch((e) => console.error("overview-init", e)); renderQuestionBanks().catch((e) => console.error("banks-init", e)); }
     }
   }
   /* ================= 题库 / 在线考试（前端） ================= */
@@ -1589,13 +1600,13 @@
   function attachmentsHtml(atts) {
     if (!atts || !atts.length) return "";
     return `<div class="qatts">` + atts.map((a) =>
-      `<a href="/api/attachments/${a.att_id}" target="_blank"><img src="/api/attachments/${a.att_id}" alt="${escapeHtml(a.filename || "附件")}" loading="lazy"></a>`).join("") + `</div>`;
+      `<a href="${API_BASE}/api/attachments/${a.att_id}" target="_blank"><img src="${API_BASE}/api/attachments/${a.att_id}" alt="${escapeHtml(a.filename || "附件")}" loading="lazy"></a>`).join("") + `</div>`;
   }
 
   // 出题弹窗内的附件缩略图列表（支持删除）
   function renderQfAttList(existing, pending) {
     const ex = (existing || []).map((a) =>
-      `<span class="att-thumb"><img src="/api/attachments/${a.att_id}" alt=""><button type="button" class="att-del" data-delatt="${a.att_id}" title="${T("qb_del_attach")}">×</button></span>`).join("");
+      `<span class="att-thumb"><img src="${API_BASE}/api/attachments/${a.att_id}" alt=""><button type="button" class="att-del" data-delatt="${a.att_id}" title="${T("qb_del_attach")}">×</button></span>`).join("");
     const pe = (pending || []).map((p, i) =>
       `<span class="att-thumb"><img src="${p.url}" alt=""><button type="button" class="att-del" data-delatt="__pending__" data-idx="${i}" title="${T("qb_del_attach")}">×</button></span>`).join("");
     if (!ex && !pe) return `<span class="muted">${T("qb_no_attach")}</span>`;
