@@ -24,12 +24,17 @@ services:
         sync: false
       - key: ADMIN_SAFE_KEY        # 修改密码的安全密钥
         sync: false
-      - key: FRONTEND_URL          # 前端 Static Site 地址，如 https://firmoo-exam-frontend.onrender.com
-        sync: false
+      - key: FRONTEND_URL          # 前端地址，由 Blueprint 自动从前端服务注入（无需手填）
+        fromService:
+          type: web
+          name: firmoo-exam-frontend
+          property: url
       - key: PASS_LINE_RATIO
         value: "0.88"
       - key: DEV_MODE              # 生产必须 0（开启跨域 Secure Cookie）
         value: "0"
+      - key: PYTHON_VERSION
+        value: "3.13"
 
   # -------------------------- 前端 Static Site --------------------------
   - type: web
@@ -38,5 +43,8 @@ services:
     buildCommand: sh build_frontend.sh
     staticPublishPath: ./static
     envVars:
-      - key: API_BASE              # 后端 Web Service 地址，如 https://firmoo-exam-api.onrender.com
-        sync: false
+      - key: API_BASE              # 后端地址，由 Blueprint 自动从后端服务注入（无需手填）
+        fromService:
+          type: web
+          name: firmoo-exam-api
+          property: url
