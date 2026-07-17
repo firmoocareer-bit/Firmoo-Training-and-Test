@@ -24,11 +24,11 @@ services:
         sync: false
       - key: ADMIN_SAFE_KEY        # 修改密码的安全密钥
         sync: false
-      - key: FRONTEND_URL          # 前端地址，由 Blueprint 自动从前端服务注入（无需手填）
+      - key: FRONTEND_URL          # 前端地址，由 Blueprint 自动从前端服务注入（仅 hostname，代码里自动补 https://）
         fromService:
           type: web
           name: firmoo-exam-frontend
-          property: url
+          property: host
       - key: PASS_LINE_RATIO
         value: "0.88"
       - key: DEV_MODE              # 生产必须 0（开启跨域 Secure Cookie）
@@ -43,8 +43,8 @@ services:
     buildCommand: sh build_frontend.sh
     staticPublishPath: ./static
     envVars:
-      - key: API_BASE              # 后端地址，由 Blueprint 自动从后端服务注入（无需手填）
+      - key: API_BASE              # 后端地址，由 Blueprint 自动从后端服务注入（仅 hostname，构建脚本自动补 https://）
         fromService:
           type: web
           name: firmoo-exam-api
-          property: url
+          property: host

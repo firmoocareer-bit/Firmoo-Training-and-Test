@@ -33,15 +33,22 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.30"
+BUILD_STAMP = "2026-07-17.31"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
 # ---------------------------------------------------------------------------
 # FRONTEND_URL：前端站点的 origin（如 https://firmoo-exam-frontend.onrender.com）。
+# Render 的 fromService:property=host 只给 hostname，这里自动补成 https://。
 # 留空则放行任意 origin（仅用于本地 / 演示）；生产务必在 Render 后端环境变量里填上前端地址。
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
-ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_URL.split(",") if o.strip()]
+ALLOWED_ORIGINS = []
+for o in FRONTEND_URL.split(","):
+    o = o.strip()
+    if o:
+        if not o.startswith(("http://", "https://")):
+            o = "https://" + o
+        ALLOWED_ORIGINS.append(o)
 
 if not DEV_MODE:
     # 生产环境：跨域凭证 cookie 必须 Secure + SameSite=None，否则浏览器不发登录态。
