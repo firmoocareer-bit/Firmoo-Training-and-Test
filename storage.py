@@ -4018,7 +4018,10 @@ class PostgresStorage(SQLiteStorage):
         set_cfg("points_period", os.environ.get("POINTS_PERIOD", "quarter"))
         set_cfg("points_period_target", os.environ.get("POINTS_PERIOD_TARGET", "0"))
         admin_pw = os.environ.get("ADMIN_PW", "admin123")
-        set_cfg("admin_password_hash", _hash_pw(admin_pw))
+        # 仅在首次（哈希不存在）时写入；不覆盖管理员在界面修改过的密码，
+        # 否则每次冷启动（如 Render 免费版休眠后唤醒）都会把密码重置回 ADMIN_PW。
+        if not self._row(self.conn.execute("SELECT 1 FROM system_config WHERE key='admin_password_hash'")):
+            set_cfg("admin_password_hash", _hash_pw(admin_pw))
         self.conn.commit()
 
     def _seed_default_dimensions_pg(self) -> None:
