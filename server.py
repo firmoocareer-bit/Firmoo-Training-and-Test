@@ -16,13 +16,16 @@ import hmac
 import hashlib
 import datetime
 from flask import Flask, request, jsonify, send_from_directory, send_file, session
-from storage import get_storage, BACKEND
+from storage import get_storage, BACKEND, _HAS_PG
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="")
+# 启动诊断：确认环境变量在 import 时是否已注入 Render 容器
+print(f"[BOOT] DATABASE_URL present={bool(os.environ.get('DATABASE_URL'))}, len={len(os.environ.get('DATABASE_URL', ''))}, psycopg2={_HAS_PG}", flush=True)
 storage = get_storage()
+print(f"[BOOT] selected storage={storage.__class__.__name__}", flush=True)
 storage.init()
 storage.seed_if_empty()
 
@@ -33,7 +36,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.32"
+BUILD_STAMP = "2026-07-17.33"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -131,6 +134,7 @@ def api_me():
 def api_version():
     import storage as _st
     return ok({"backend": BACKEND, "build": BUILD_STAMP,
+               "storage_class": storage.__class__.__name__,
                "has_database_url": bool(os.environ.get("DATABASE_URL")),
                "database_url_len": len(os.environ.get("DATABASE_URL", "")),
                "has_psycopg2": _st._HAS_PG,
