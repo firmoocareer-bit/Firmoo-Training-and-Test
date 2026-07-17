@@ -33,7 +33,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.31"
+BUILD_STAMP = "2026-07-17.32"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -129,7 +129,11 @@ def api_me():
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
+    import storage as _st
     return ok({"backend": BACKEND, "build": BUILD_STAMP,
+               "has_database_url": bool(os.environ.get("DATABASE_URL")),
+               "database_url_len": len(os.environ.get("DATABASE_URL", "")),
+               "has_psycopg2": _st._HAS_PG,
                "msg": "若此接口返回 HTML 或 404，说明 5000 被其他程序占用，并非本看板"})
 
 
