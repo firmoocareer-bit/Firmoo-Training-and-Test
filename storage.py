@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS question_attachments (
     seq         INTEGER DEFAULT 0,
     filename    TEXT,            -- 原始文件名
     mime        TEXT,            -- image/png 等
-    stored_path TEXT NOT NULL,   -- 服务器上 data/attachments/ 下的相对/绝对路径
+    stored_path TEXT,            -- 已废弃（图片改存数据库后留空），保留以兼容旧行
+    data        BLOB,            -- 图片二进制，直接存数据库，跨部署永久保存
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (question_id) REFERENCES questions(question_id)
 );
@@ -561,6 +562,12 @@ class SQLiteStorage(BaseStorage):
         cols3 = {r["name"] for r in self.conn.execute("PRAGMA table_info(questions)")}
         if "source_exam" not in cols3:
             self.conn.execute("ALTER TABLE questions ADD COLUMN source_exam TEXT")
+
+        # 图片改存数据库（跨部署永久保存）：旧库补 data 列，并清理只有磁盘路径的孤儿附件
+        qa_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(question_attachments)")}
+        if "data" not in qa_cols:
+            self.conn.execute("ALTER TABLE question_attachments ADD COLUMN data BLOB")
+        self.conn.execute("DELETE FROM question_attachments WHERE data IS NULL")
 
         # 增强3-需求1：得分率判定所需列
         for tbl in ("exam_results", "exam_attempts"):
@@ -2463,18 +2470,7 @@ class SQLiteStorage(BaseStorage):
         if not ids:
             return 0
         placeholders = ",".join("?" * len(ids))
-        # 物理删除附件文件
-        try:
-            rows = self._rows(self.conn.execute(
-                f"SELECT stored_path FROM question_attachments WHERE question_id IN ({placeholders})", ids))
-            for r in rows:
-                try:
-                    if r.get("stored_path") and os.path.exists(r["stored_path"]):
-                        os.remove(r["stored_path"])
-                except OSError:
-                    pass
-        except Exception:
-            pass
+        # 附件已存数据库，随 question_attachments 行一并删除，无需物理删文件
         self.conn.execute(f"DELETE FROM paper_questions WHERE question_id IN ({placeholders})", ids)
         self.conn.execute(f"DELETE FROM question_attachments WHERE question_id IN ({placeholders})", ids)
         cur = self.conn.execute(f"DELETE FROM questions WHERE question_id IN ({placeholders})", ids)
@@ -2483,41 +2479,30 @@ class SQLiteStorage(BaseStorage):
 
     # ---------- 题目附件（图片等） ----------
     def add_question_attachment(self, qid, file_obj, filename, mime):
-        """保存上传文件到 data/attachments/，并返回附件元数据。file_obj 为类文件对象。"""
-        att_dir = os.path.join(BASE_DIR, "data", "attachments")
-        os.makedirs(att_dir, exist_ok=True)
-        # 计算序号，避免重名覆盖
+        """读取上传文件二进制，直接存入数据库（跨部署永久保存，不依赖服务器硬盘）。"""
+        data = file_obj.read()
         seq = self._row(self.conn.execute(
             "SELECT COALESCE(MAX(seq),0)+1 m FROM question_attachments WHERE question_id=?", (qid,)))["m"]
-        ext = os.path.splitext(filename or "img")[1] or ".bin"
-        safe_name = f"q{qid}_{seq}{ext}"
-        stored = os.path.join(att_dir, safe_name)
-        with open(stored, "wb") as f:
-            f.write(file_obj.read())
         cur = self.conn.execute(
-            "INSERT INTO question_attachments (question_id, seq, filename, mime, stored_path, created_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (qid, seq, filename, mime, stored, _now()))
+            "INSERT INTO question_attachments (question_id, seq, filename, mime, stored_path, data, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (qid, seq, filename, mime, "", data, _now()))
         self.conn.commit()
-        return self._row(self.conn.execute("SELECT * FROM question_attachments WHERE att_id=?", (cur.lastrowid,)))
+        return self._row(self.conn.execute(
+            "SELECT att_id, question_id, seq, filename, mime, created_at "
+            "FROM question_attachments WHERE att_id=?", (cur.lastrowid,)))
 
     def list_question_attachments(self, qid):
         return self._rows(self.conn.execute(
-            "SELECT * FROM question_attachments WHERE question_id=? ORDER BY seq", (qid,)))
+            "SELECT att_id, question_id, seq, filename, mime, created_at "
+            "FROM question_attachments WHERE question_id=? ORDER BY seq", (qid,)))
 
     def get_attachment(self, att_id):
         return self._row(self.conn.execute("SELECT * FROM question_attachments WHERE att_id=?", (att_id,)))
 
     def delete_question_attachment(self, att_id):
-        row = self.get_attachment(att_id)
-        if row:
-            try:
-                if os.path.exists(row["stored_path"]):
-                    os.remove(row["stored_path"])
-            except OSError:
-                pass
-            self.conn.execute("DELETE FROM question_attachments WHERE att_id=?", (att_id,))
-            self.conn.commit()
+        self.conn.execute("DELETE FROM question_attachments WHERE att_id=?", (att_id,))
+        self.conn.commit()
 
     def _with_attachments(self, rows):
         """给题目列表/详情批量附加 attachments 字段。"""
@@ -2526,7 +2511,8 @@ class SQLiteStorage(BaseStorage):
         ids = [r["question_id"] for r in rows]
         placeholders = ",".join("?" * len(ids))
         atts = self._rows(self.conn.execute(
-            f"SELECT * FROM question_attachments WHERE question_id IN ({placeholders}) ORDER BY seq", ids))
+            f"SELECT att_id, question_id, seq, filename, mime, created_at "
+            f"FROM question_attachments WHERE question_id IN ({placeholders}) ORDER BY seq", ids))
         by_q = {}
         for a in atts:
             by_q.setdefault(a["question_id"], []).append(a)
@@ -3717,7 +3703,8 @@ CREATE TABLE IF NOT EXISTS question_attachments (
     seq         INTEGER DEFAULT 0,
     filename    TEXT,
     mime        TEXT,
-    stored_path TEXT NOT NULL,
+    stored_path TEXT,
+    data        BYTEA,
     created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
     FOREIGN KEY (question_id) REFERENCES questions(question_id)
 );
@@ -3994,6 +3981,10 @@ class PostgresStorage(SQLiteStorage):
         for stmt in PG_SCHEMA.split(";"):
             if stmt.strip():
                 cur.execute(stmt)
+        # 迁移：已存在的库补 data 列（图片改存数据库，跨部署不丢）
+        cur.execute("ALTER TABLE question_attachments ADD COLUMN IF NOT EXISTS data BYTEA")
+        # 清理迁移前遗留的、只有磁盘路径而无二进制数据的孤儿附件（图片已无法读取）
+        cur.execute("DELETE FROM question_attachments WHERE data IS NULL")
         pg.commit()
         cur.close()
         pg.close()
