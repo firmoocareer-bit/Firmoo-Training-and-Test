@@ -29,6 +29,13 @@ import hmac
 from abc import ABC, abstractmethod
 from typing import Optional
 
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    _HAS_PG = True
+except Exception:  # psycopg2 仅云端 Postgres 后端需要，本地 SQLite 可缺省
+    _HAS_PG = False
+
 # ----------------------------------------------------------------------------
 # 配置（可通过环境变量覆盖，便于迁移到云端时只改配置、不改代码）
 # ----------------------------------------------------------------------------
@@ -3585,7 +3592,449 @@ class CloudStorage(BaseStorage):
 # ----------------------------------------------------------------------------
 # 工厂：通过配置切换后端，业务代码零改动
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Neon / Postgres 实现（云端生产后端）
+# ----------------------------------------------------------------------------
+# 通过 _PgConn 代理，把 SQLiteStorage 的 SQL 实时翻译成 Postgres，
+# 从而继承其全部 254 个业务方法，无需重写。
+PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cs_reps (
+    rep_id     TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    hire_date  TEXT,
+    leave_date TEXT,
+    status     TEXT DEFAULT 'active',
+    stage      TEXT DEFAULT '新人',
+    login_id   TEXT,
+    position   TEXT,
+    channel    TEXT,
+    created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_dimensions (
+    dim_id      SERIAL PRIMARY KEY,
+    name_cn     TEXT NOT NULL,
+    name_en     TEXT,
+    description TEXT,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+    question_id SERIAL PRIMARY KEY,
+    q_type      TEXT NOT NULL DEFAULT 'single',
+    category    TEXT,
+    content     TEXT NOT NULL,
+    options     TEXT,
+    answer      TEXT,
+    dim_id      INTEGER,
+    score       REAL DEFAULT 5,
+    explanation TEXT,
+    source_exam TEXT,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    FOREIGN KEY (dim_id) REFERENCES knowledge_dimensions(dim_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_sessions (
+    session_id  SERIAL PRIMARY KEY,
+    exam_name   TEXT NOT NULL,
+    batch       TEXT NOT NULL,
+    exam_date   TEXT NOT NULL,
+    pass_score  REAL DEFAULT 60,
+    exam_type   TEXT DEFAULT 'onboarding',
+    cycle_tag   TEXT,
+    note        TEXT,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS exam_papers (
+    paper_id    SERIAL PRIMARY KEY,
+    title       TEXT NOT NULL,
+    batch       TEXT DEFAULT 'online',
+    exam_type   TEXT DEFAULT 'onboarding',
+    status      TEXT DEFAULT 'draft',
+    duration_min INTEGER DEFAULT 0,
+    open_at     TEXT,
+    close_at    TEXT,
+    pass_score  REAL DEFAULT 60,
+    created_by  TEXT,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS exam_results (
+    result_id  SERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    rep_id     TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    subjects   TEXT,
+    total      REAL,
+    passed     INTEGER,
+    score_rate REAL,
+    full_score REAL,
+    created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    FOREIGN KEY (session_id) REFERENCES exam_sessions(session_id),
+    FOREIGN KEY (rep_id) REFERENCES cs_reps(rep_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_question_dimensions (
+    exam_name   TEXT NOT NULL,
+    q_number    TEXT NOT NULL,
+    dim_id      INTEGER NOT NULL,
+    max_score   REAL,
+    PRIMARY KEY (exam_name, q_number, dim_id),
+    FOREIGN KEY (dim_id) REFERENCES knowledge_dimensions(dim_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_question_bank (
+    exam_name   TEXT NOT NULL,
+    q_number    TEXT NOT NULL,
+    question_id INTEGER NOT NULL,
+    seq         INTEGER,
+    PRIMARY KEY (exam_name, q_number),
+    FOREIGN KEY (question_id) REFERENCES questions(question_id)
+);
+
+CREATE TABLE IF NOT EXISTS question_bank_meta (
+    exam_name     TEXT PRIMARY KEY,
+    orig_filename TEXT,
+    uploaded_at   TEXT,
+    q_count       INTEGER,
+    dim_ids       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS accounts (
+    rep_id        TEXT PRIMARY KEY,
+    login_id      TEXT UNIQUE,
+    password_hash TEXT,
+    role          TEXT DEFAULT 'csr',
+    created_at    TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    FOREIGN KEY (rep_id) REFERENCES cs_reps(rep_id)
+);
+
+CREATE TABLE IF NOT EXISTS question_attachments (
+    att_id      SERIAL PRIMARY KEY,
+    question_id INTEGER NOT NULL,
+    seq         INTEGER DEFAULT 0,
+    filename    TEXT,
+    mime        TEXT,
+    stored_path TEXT NOT NULL,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    FOREIGN KEY (question_id) REFERENCES questions(question_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_assignments (
+    paper_id    INTEGER NOT NULL,
+    rep_id      TEXT NOT NULL,
+    open_at     TEXT,
+    due_at      TEXT,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    PRIMARY KEY (paper_id, rep_id),
+    FOREIGN KEY (paper_id) REFERENCES exam_papers(paper_id),
+    FOREIGN KEY (rep_id) REFERENCES cs_reps(rep_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_questions (
+    paper_id    INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    seq         INTEGER,
+    score       REAL,
+    PRIMARY KEY (paper_id, question_id),
+    FOREIGN KEY (paper_id) REFERENCES exam_papers(paper_id),
+    FOREIGN KEY (question_id) REFERENCES questions(question_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_attempts (
+    attempt_id  SERIAL PRIMARY KEY,
+    paper_id    INTEGER NOT NULL,
+    rep_id      TEXT NOT NULL,
+    start_time  TEXT,
+    submit_time TEXT,
+    status      TEXT DEFAULT 'in_progress',
+    auto_score  REAL DEFAULT 0,
+    manual_score REAL DEFAULT 0,
+    total_score REAL DEFAULT 0,
+    passed      INTEGER DEFAULT 0,
+    score_rate  REAL,
+    full_score  REAL,
+    created_at  TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    FOREIGN KEY (paper_id) REFERENCES exam_papers(paper_id),
+    FOREIGN KEY (rep_id) REFERENCES cs_reps(rep_id)
+);
+
+CREATE TABLE IF NOT EXISTS exam_answers (
+    attempt_id  INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    answer      TEXT,
+    is_correct  INTEGER,
+    score       REAL DEFAULT 0,
+    graded_by   TEXT,
+    graded_at   TEXT,
+    PRIMARY KEY (attempt_id, question_id),
+    FOREIGN KEY (attempt_id) REFERENCES exam_attempts(attempt_id),
+    FOREIGN KEY (question_id) REFERENCES questions(question_id)
+);
+
+CREATE TABLE IF NOT EXISTS system_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS points_account (
+    rep_id TEXT PRIMARY KEY, total INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS points_log (
+    log_id SERIAL PRIMARY KEY, rep_id TEXT, rule_key TEXT,
+    delta INTEGER, ref_type TEXT, ref_id TEXT, note TEXT,
+    created_at TEXT, year INTEGER, quarter INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS learning_materials (
+    material_id SERIAL PRIMARY KEY, title TEXT, mtype TEXT,
+    dim_id INTEGER, content TEXT, file_path TEXT, url TEXT, link_kind TEXT,
+    created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE TABLE IF NOT EXISTS material_dimensions (
+    material_id INTEGER NOT NULL, dim_id INTEGER NOT NULL,
+    PRIMARY KEY (material_id, dim_id)
+);
+
+CREATE TABLE IF NOT EXISTS study_records (
+    record_id SERIAL PRIMARY KEY, rep_id TEXT, material_id INTEGER,
+    status TEXT DEFAULT 'opened', progress INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS')),
+    UNIQUE (rep_id, material_id)
+);
+
+CREATE TABLE IF NOT EXISTS mini_quiz (
+    quiz_id SERIAL PRIMARY KEY, rep_id TEXT, dim_id INTEGER,
+    question_ids TEXT, passed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (to_char(now(), 'YYYY-MM-DD HH24:MI:SS'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_session ON exam_results(session_id);
+CREATE INDEX IF NOT EXISTS idx_results_rep     ON exam_results(rep_id);
+CREATE INDEX IF NOT EXISTS idx_paper_q_paper  ON paper_questions(paper_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_paper  ON exam_attempts(paper_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_rep    ON exam_attempts(rep_id);
+"""
+
+# INSERT OR REPLACE 的冲突目标（主键列），用于翻译成 ON CONFLICT DO UPDATE
+_PG_REPLACE_PK = {
+    "exam_assignments": ("paper_id", "rep_id"),
+    "accounts": ("rep_id",),
+    "cs_reps": ("rep_id",),
+    "exam_question_dimensions": ("exam_name", "q_number", "dim_id"),
+    "study_records": ("rep_id", "material_id"),
+    "exam_question_bank": ("exam_name", "q_number"),
+    "question_bank_meta": ("exam_name",),
+}
+# 单 SERIAL 主键表：INSERT 后追加 RETURNING <pk> 以精确模拟 lastrowid
+_PG_SERIAL_PK = {
+    "exam_sessions": "session_id",
+    "questions": "question_id",
+    "question_attachments": "att_id",
+    "exam_papers": "paper_id",
+    "exam_attempts": "attempt_id",
+    "exam_results": "result_id",
+    "points_log": "log_id",
+    "learning_materials": "material_id",
+    "mini_quiz": "quiz_id",
+    "knowledge_dimensions": "dim_id",
+}
+
+
+def _pg_translate(sql: str) -> str:
+    """把 SQLite 风格 SQL 翻成 Postgres 风格（仅做安全、确定的改写）。"""
+    s = sql.replace("?", "%s")
+    # INSERT OR IGNORE -> ... VALUES (...) ON CONFLICT DO NOTHING
+    s = re.sub(
+        r"INSERT OR IGNORE INTO (\w+)\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)",
+        r"INSERT INTO \1 (\2) VALUES (\3) ON CONFLICT DO NOTHING",
+        s, flags=re.IGNORECASE)
+    # INSERT OR REPLACE -> ... VALUES (...) ON CONFLICT (pk) DO UPDATE SET ...
+    m = re.search(
+        r"INSERT OR REPLACE INTO (\w+)\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)",
+        s, flags=re.IGNORECASE)
+    if m:
+        tbl, colstr, valstr = m.groups()
+        pk = _PG_REPLACE_PK.get(tbl)
+        if pk:
+            cols = [c.strip() for c in colstr.split(",")]
+            nonpk = [c for c in cols if c not in pk]
+            setcl = ", ".join(f"{c}=EXCLUDED.{c}" for c in nonpk)
+            s = (f"INSERT INTO {tbl} ({colstr}) VALUES ({valstr}) "
+                 f"ON CONFLICT ({', '.join(pk)}) DO UPDATE SET {setcl}")
+    # SQLite 日期函数 strftime('fmt', col) -> TO_CHAR(col::timestamp, 'PGFMT')
+    def _strftime_repl(mm):
+        fmt = mm.group(1)
+        col = mm.group(2)
+        pg = (fmt.replace("%Y", "YYYY").replace("%m", "MM").replace("%d", "DD")
+                  .replace("%H", "HH24").replace("%M", "MI").replace("%S", "SS"))
+        return f"TO_CHAR({col}::timestamp, '{pg}')"
+    s = re.sub(r"strftime\('([^']+)',\s*([^)]+)\)", _strftime_repl, s)
+    return s
+
+
+class _PgCursor:
+    """包装 psycopg2 cursor：行按 dict 访问、INSERT 后精确模拟 lastrowid。"""
+
+    def __init__(self, cur, conn):
+        self._cur = cur
+        self._conn = conn
+        self._lastval = None
+
+    def execute(self, sql, params=None):
+        sql2 = _pg_translate(sql)
+        pk = None
+        mm = re.match(r"\s*INSERT INTO (\w+)", sql2, flags=re.IGNORECASE)
+        if mm:
+            pk = _PG_SERIAL_PK.get(mm.group(1))
+        if pk:
+            sql2 = sql2.rstrip().rstrip(";") + f" RETURNING {pk}"
+        # SQLite 把 Python bool 存成 0/1；Postgres 的 INTEGER 列不接受布尔字面量，
+        # 故在发送前把 bool 统一转成 int，sqlite 端不受影响（int 仍是 int）。
+        if params is not None:
+            if isinstance(params, (list, tuple)):
+                params = tuple(int(p) if isinstance(p, bool) else p for p in params)
+            elif isinstance(params, dict):
+                params = {k: (int(v) if isinstance(v, bool) else v) for k, v in params.items()}
+        self._cur.execute(sql2, params)
+        if pk:
+            row = self._cur.fetchone()
+            self._lastval = row[0] if row else None
+        return self
+
+    def executemany(self, sql, params_seq):
+        self._cur.executemany(_pg_translate(sql), params_seq)
+        return self
+
+    def fetchone(self):
+        r = self._cur.fetchone()
+        return dict(r) if r is not None else None
+
+    def fetchall(self):
+        return [dict(r) for r in self._cur.fetchall()]
+
+    @property
+    def lastrowid(self):
+        return self._lastval
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+
+
+class _PgConn:
+    """代理连接：把所有执行请求翻译后交给 psycopg2。"""
+
+    def __init__(self, pg):
+        self._pg = pg
+
+    def cursor(self):
+        return _PgCursor(self._pg.cursor(), self._pg)
+
+    def execute(self, sql, params=None):
+        return _PgCursor(self._pg.cursor(), self._pg).execute(sql, params)
+
+    def commit(self):
+        self._pg.commit()
+
+    def rollback(self):
+        self._pg.rollback()
+
+    def close(self):
+        try:
+            self._pg.close()
+        except Exception:
+            pass
+
+
+class PostgresStorage(SQLiteStorage):
+    """Neon/Postgres 实现：继承 SQLiteStorage 全部业务方法，仅替换连接层与 DDL。"""
+
+    def __init__(self, database_url: str = None):
+        self.database_url = database_url or os.environ.get("DATABASE_URL", "")
+        if not self.database_url:
+            raise RuntimeError("PostgresStorage 需要设置 DATABASE_URL 环境变量（Neon 连接串）")
+        if not _HAS_PG:
+            raise RuntimeError("未安装 psycopg2-binary，无法使用 Postgres 后端")
+        self._local = threading.local()
+
+    def _new_conn(self):
+        pg = psycopg2.connect(self.database_url, cursor_factory=DictCursor)
+        pg.autocommit = False
+        return pg
+
+    @property
+    def conn(self):
+        try:
+            from flask import g
+            if not hasattr(g, "pg_conn") or g.pg_conn is None:
+                g.pg_conn = self._new_conn()
+            return _PgConn(g.pg_conn)
+        except RuntimeError:
+            t = self._local
+            if not hasattr(t, "conn") or t.conn is None:
+                t.conn = self._new_conn()
+            return _PgConn(t.conn)
+
+    def init(self) -> None:
+        pg = self._new_conn()
+        cur = pg.cursor()
+        for stmt in PG_SCHEMA.split(";"):
+            if stmt.strip():
+                cur.execute(stmt)
+        pg.commit()
+        cur.close()
+        pg.close()
+
+    def seed_if_empty(self) -> None:
+        # 生产环境：不灌 demo 客服/成绩（考题+资料库通过迁移脚本导入）。
+        # 仅确保系统设置与管理员密码哈希存在，使管理员可登录。
+        self._ensure_config()
+        self._seed_default_dimensions_pg()
+
+    def _ensure_config(self) -> None:
+        def set_cfg(key, value):
+            self.conn.execute(
+                "INSERT INTO system_config (key, value, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at",
+                (key, value, _now()))
+
+        set_cfg("pass_line_ratio", os.environ.get("PASS_LINE_RATIO", "0.88"))
+        set_cfg("points_rules", os.environ.get("POINTS_RULES", json.dumps(
+            {"participate": 10, "pass": {"0.8": 15, "0.9": 20, "0.95": 30},
+             "mini_quiz": 10, "material": 5})))
+        set_cfg("points_period", os.environ.get("POINTS_PERIOD", "quarter"))
+        set_cfg("points_period_target", os.environ.get("POINTS_PERIOD_TARGET", "0"))
+        admin_pw = os.environ.get("ADMIN_PW", "admin123")
+        set_cfg("admin_password_hash", _hash_pw(admin_pw))
+        self.conn.commit()
+
+    def _seed_default_dimensions_pg(self) -> None:
+        c = self._row(self.conn.execute("SELECT COUNT(*) c FROM knowledge_dimensions"))["c"]
+        if c == 0:
+            for cn, en in DEFAULT_DIMS:
+                self.conn.execute(
+                    "INSERT INTO knowledge_dimensions (name_cn, name_en, created_at) VALUES (?,?,?)",
+                    (cn, en, _now()))
+            self.conn.commit()
+
+
 def get_storage() -> BaseStorage:
+    if os.environ.get("DATABASE_URL"):
+        if not _HAS_PG:
+            raise RuntimeError("未安装 psycopg2，无法使用 Postgres 后端")
+        return PostgresStorage()
     if BACKEND == "cloud":
         return CloudStorage()
     return SQLiteStorage(DB_PATH)

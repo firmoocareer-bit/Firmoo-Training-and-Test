@@ -33,7 +33,37 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.28"
+BUILD_STAMP = "2026-07-17.30"
+
+# ---------------------------------------------------------------------------
+# 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
+# ---------------------------------------------------------------------------
+# FRONTEND_URL：前端站点的 origin（如 https://firmoo-exam-frontend.onrender.com）。
+# 留空则放行任意 origin（仅用于本地 / 演示）；生产务必在 Render 后端环境变量里填上前端地址。
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
+ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_URL.split(",") if o.strip()]
+
+if not DEV_MODE:
+    # 生产环境：跨域凭证 cookie 必须 Secure + SameSite=None，否则浏览器不发登录态。
+    app.config["SESSION_COOKIE_SECURE"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "None"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+
+@app.after_request
+def _cors(resp):
+    origin = request.headers.get("Origin")
+    if origin:
+        if not ALLOWED_ORIGINS or origin in ALLOWED_ORIGINS:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            resp.headers["Vary"] = "Origin"
+    if request.method == "OPTIONS":
+        resp.status_code = 204
+        resp.headers["Content-Length"] = "0"
+    return resp
 
 # 注意：前端缓存破坏靠 index.html 里写死的 ?v=BUILD_STAMP（Flask 的 static_url_path=""
 # 会让 “/” 被静态路由直接 serve，绕过 / 视图里的注入逻辑，故版本戳直接写进 index.html）。
@@ -128,6 +158,14 @@ def _close_db_conn(exc=None):
         except Exception:
             pass
         g.db_conn = None
+    # Postgres 连接（见 storage.PostgresStorage.conn，挂在 g.pg_conn）
+    pg = getattr(g, "pg_conn", None)
+    if pg is not None:
+        try:
+            pg.close()
+        except Exception:
+            pass
+        g.pg_conn = None
 
 
 

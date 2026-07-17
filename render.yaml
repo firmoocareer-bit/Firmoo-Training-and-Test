@@ -1,0 +1,42 @@
+# =============================================================================
+# Render Blueprint —— 严格两个服务（前后端分离、跨域）
+#   1) firmoo-exam-api       : Python Web Service（Flask + gunicorn + Postgres/Neon）
+#   2) firmoo-exam-frontend  : Static Site（纯前端，构建时注入后端地址）
+# 用法：Render 控制台 -> New -> Blueprint -> 连接 GitHub 仓库
+#       firmoocareer-bit/Firmoo-Training-and-Test，Render 会按本文件创建两个服务。
+# 创建后需互填地址：把前端 URL 填进后端的 FRONTEND_URL，把后端 URL 填进前端的 API_BASE。
+# =============================================================================
+services:
+  # -------------------------- 后端 API --------------------------
+  - type: web
+    name: firmoo-exam-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /api/version
+    envVars:
+      - key: DATABASE_URL          # Neon 连接串（Postgres）；填在 Render 控制台
+        sync: false
+      - key: SECRET_KEY            # 随机长字符串，登录态签名用
+        sync: false
+      - key: ADMIN_PW              # 管理员登录密码
+        sync: false
+      - key: ADMIN_SAFE_KEY        # 修改密码的安全密钥
+        sync: false
+      - key: FRONTEND_URL          # 前端 Static Site 地址，如 https://firmoo-exam-frontend.onrender.com
+        sync: false
+      - key: PASS_LINE_RATIO
+        value: "0.88"
+      - key: DEV_MODE              # 生产必须 0（开启跨域 Secure Cookie）
+        value: "0"
+
+  # -------------------------- 前端 Static Site --------------------------
+  - type: web
+    name: firmoo-exam-frontend
+    runtime: static
+    buildCommand: sh build_frontend.sh
+    staticPublishPath: ./static
+    envVars:
+      - key: API_BASE              # 后端 Web Service 地址，如 https://firmoo-exam-api.onrender.com
+        sync: false

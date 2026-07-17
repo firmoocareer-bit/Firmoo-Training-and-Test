@@ -52,8 +52,18 @@
     return nested !== undefined ? nested : k;
   };
 
+  /* ---------- 跨域 API 前缀（前后端分离部署） ---------- */
+  // 生产：static/config.js 由 Render 构建时注入 window.API_BASE（后端地址）。
+  // 本地：config.js 不存在，API_BASE 为空 -> 走同源（5000 端口）。
+  const API_BASE = (window.API_BASE && String(window.API_BASE).trim())
+    ? window.API_BASE.replace(/\/+$/, "") : "";
+  // 带跨域凭证的底层 fetch（文件上传也走它，注意不要覆盖 multipart 的 Content-Type）
+  function _rawFetch(path, opts) {
+    return fetch(API_BASE + path, Object.assign({ credentials: "include" }, opts));
+  }
+
   async function api(path, opts) {
-    const res = await fetch(path, Object.assign({
+    const res = await _rawFetch(path, Object.assign({
       headers: { "Content-Type": "application/json" },
     }, opts));
     let j;
@@ -1018,7 +1028,7 @@
       });
       $("#modalSave").disabled = true; $("#modalSave").textContent = T("up_doing");
       try {
-        const r = await fetch("/api/results/import", { method: "POST", body: fd });
+        const r = await _rawFetch("/api/results/import", { method: "POST", body: fd });
         const j = await r.json();
         if (!j.ok) throw new Error(j.msg);
         closeModal();
@@ -1065,7 +1075,7 @@
         const fd = new FormData();
         fd.append("file", f);
         try {
-          const r = await fetch("/api/questions/import-ppt?dry=1", { method: "POST", body: fd });
+          const r = await _rawFetch("/api/questions/import-ppt?dry=1", { method: "POST", body: fd });
           const j = await r.json();
           if (!j.ok) throw new Error(j.msg);
           const d = j.data || {};
@@ -1094,7 +1104,7 @@
         fd.append("dim_ids", dimIds.join(","));
         $("#modalSave").disabled = true; $("#modalSave").textContent = T("up_ppt_doing");
         try {
-          const r = await fetch("/api/questions/import-ppt", { method: "POST", body: fd });
+          const r = await _rawFetch("/api/questions/import-ppt", { method: "POST", body: fd });
           const j = await r.json();
           if (!j.ok) throw new Error(j.msg);
           showPptResult(j.data || {}, j.msg);
@@ -1194,7 +1204,7 @@
         try {
           const fd = new FormData();
           fd.append("file", f);
-          const r = await fetch("/api/reps/import", { method: "POST", body: fd, credentials: "include" });
+          const r = await _rawFetch("/api/reps/import", { method: "POST", body: fd });
           const j = await r.json();
           if (!j.ok) throw new Error(j.msg || "导入失败");
           await renderManageReps(); await loadSelectors();
@@ -1291,7 +1301,7 @@
       const f = e.target.files[0]; if (!f) return;
       const fd = new FormData(); fd.append("file", f);
       try {
-        const r = await fetch("/api/questions/import", { method: "POST", body: fd });
+        const r = await _rawFetch("/api/questions/import", { method: "POST", body: fd });
         const j = await r.json();
         if (!j.ok) throw new Error(j.msg);
         toast(`导入 ${j.data.imported} 题，错误 ${j.data.errors.length}`);
@@ -1643,7 +1653,7 @@
         for (const f of files) {
           const fd = new FormData(); fd.append("file", f);
           try {
-            const r = await fetch("/api/questions/" + q.question_id + "/attachments", { method: "POST", body: fd });
+            const r = await _rawFetch("/api/questions/" + q.question_id + "/attachments", { method: "POST", body: fd });
             const j = await r.json();
             if (!j.ok) throw new Error(j.msg);
             existingAtts.push(j.data);
@@ -1769,7 +1779,7 @@
         if (!isEdit && newId != null) {
           for (const p of pending) {
             const fd = new FormData(); fd.append("file", p.file);
-            try { await fetch("/api/questions/" + newId + "/attachments", { method: "POST", body: fd }); }
+            try { await _rawFetch("/api/questions/" + newId + "/attachments", { method: "POST", body: fd }); }
             catch (err) { alert("图片上传失败: " + err.message); }
           }
         }
@@ -2667,7 +2677,7 @@
         try {
           const url = isEdit ? ("/api/materials/" + m.material_id) : "/api/materials";
           const method = isEdit ? "PUT" : "POST";
-          const r = await fetch(url, { method, body: fd });
+          const r = await _rawFetch(url, { method, body: fd });
           const j = await r.json();
           if (!j.ok) throw new Error(j.msg);
           closeModal(); toast(T("saved")); renderMaterials();
