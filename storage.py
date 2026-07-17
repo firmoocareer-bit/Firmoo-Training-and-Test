@@ -962,17 +962,18 @@ class SQLiteStorage(BaseStorage):
         return self.get_config("admin_password_hash", "")
 
     def update_admin_password(self, new_password: str):
-        """更新管理员密码（SHA256 哈希存储）。"""
-        import hashlib
-        self.set_config("admin_password_hash", hashlib.sha256(new_password.encode()).hexdigest())
+        """更新管理员密码（固定 salt 的 SHA256 哈希存储，与 seed 一致）。"""
+        self.set_config("admin_password_hash", _hash_pw(new_password))
 
     def verify_admin_password(self, password: str) -> bool:
-        """验证管理员密码（SHA256 哈希比对）。"""
+        """验证管理员密码（优先比对 salt 哈希；兼容旧版无 salt 哈希）。"""
+        stored = self.get_admin_password_hash()
+        if not stored:
+            return False
         import hashlib
-        return hmac.compare_digest(
-            hashlib.sha256(password.encode()).hexdigest(),
-            self.get_admin_password_hash()
-        )
+        if hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), stored):
+            return True
+        return hmac.compare_digest(_hash_pw(password), stored)
 
     def get_pass_line_ratio(self) -> float:
         try:
