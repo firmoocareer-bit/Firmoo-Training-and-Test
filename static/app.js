@@ -68,6 +68,17 @@
   // 本地：config.js 不存在，API_BASE 为空 -> 走同源（5000 端口）。
   const API_BASE = (window.API_BASE && String(window.API_BASE).trim())
     ? window.API_BASE.replace(/\/+$/, "") : "";
+  const ATT_VER = window.BUILD_STAMP || "1";
+
+  // 附件图片加载失败时的降级提示（避免永久空白/破损图标）
+  window.onAttImgError = function (img) {
+    img.onerror = null;
+    img.style.display = "none";
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = "图片加载失败";
+    img.parentNode.appendChild(span);
+  };
   // 带跨域凭证的底层 fetch（文件上传也走它，注意不要覆盖 multipart 的 Content-Type）
   function _rawFetch(path, opts) {
     return fetch(API_BASE + path, Object.assign({ credentials: "include" }, opts));
@@ -1600,13 +1611,13 @@
   function attachmentsHtml(atts) {
     if (!atts || !atts.length) return "";
     return `<div class="qatts">` + atts.map((a) =>
-      `<a href="${API_BASE}/api/attachments/${a.att_id}" target="_blank"><img src="${API_BASE}/api/attachments/${a.att_id}" alt="${escapeHtml(a.filename || "附件")}" loading="lazy"></a>`).join("") + `</div>`;
+      `<a href="${API_BASE}/api/attachments/${a.att_id}" target="_blank"><img src="${API_BASE}/api/attachments/${a.att_id}?v=${ATT_VER}" alt="${escapeHtml(a.filename || "附件")}" loading="lazy" onerror="window.onAttImgError(this)"></a>`).join("") + `</div>`;
   }
 
   // 出题弹窗内的附件缩略图列表（支持删除）
   function renderQfAttList(existing, pending) {
     const ex = (existing || []).map((a) =>
-      `<span class="att-thumb"><img src="${API_BASE}/api/attachments/${a.att_id}" alt=""><button type="button" class="att-del" data-delatt="${a.att_id}" title="${T("qb_del_attach")}">×</button></span>`).join("");
+      `<span class="att-thumb"><img src="${API_BASE}/api/attachments/${a.att_id}?v=${ATT_VER}" alt="" onerror="window.onAttImgError(this)"><button type="button" class="att-del" data-delatt="${a.att_id}" title="${T("qb_del_attach")}">×</button></span>`).join("");
     const pe = (pending || []).map((p, i) =>
       `<span class="att-thumb"><img src="${p.url}" alt=""><button type="button" class="att-del" data-delatt="__pending__" data-idx="${i}" title="${T("qb_del_attach")}">×</button></span>`).join("");
     if (!ex && !pe) return `<span class="muted">${T("qb_no_attach")}</span>`;
