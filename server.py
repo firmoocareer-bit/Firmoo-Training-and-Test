@@ -16,6 +16,7 @@ import hmac
 import hashlib
 import datetime
 from flask import Flask, request, jsonify, send_from_directory, send_file, session
+import io
 from storage import get_storage, BACKEND, _HAS_PG
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +37,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.34"
+BUILD_STAMP = "2026-07-17.35"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -1184,9 +1185,11 @@ def api_delete_question_attachment(att_id):
 @app.route("/api/attachments/<int:att_id>", methods=["GET"])
 def api_serve_attachment(att_id):
     att = storage.get_attachment(att_id)
-    if not att or not att.get("stored_path") or not os.path.exists(att["stored_path"]):
+    if not att or att.get("data") is None:
         return fail("附件不存在", 404)
-    return send_file(att["stored_path"], mimetype=att.get("mime"), as_attachment=False)
+    return send_file(io.BytesIO(att["data"]),
+                     mimetype=att.get("mime") or "application/octet-stream",
+                     as_attachment=False)
 
 
 @app.route("/api/questions/banks", methods=["DELETE"])
