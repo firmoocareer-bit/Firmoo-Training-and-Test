@@ -1519,6 +1519,9 @@
       if (me.role === "rep") { switchView("mine"); renderMine().catch((e) => console.error("mine-init", e)); }
       else { switchView("overview"); renderOverview().catch((e) => console.error("overview-init", e)); renderQuestionBanks().catch((e) => console.error("banks-init", e)); }
     }
+    // 登录态校验完成，隐藏启动遮罩（无论成功还是回到登录页）
+    const boot = document.getElementById("bootMask");
+    if (boot) boot.classList.add("hide");
   }
   /* ================= 题库 / 在线考试（前端） ================= */
   let dimCache = null;
