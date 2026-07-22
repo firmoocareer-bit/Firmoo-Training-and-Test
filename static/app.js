@@ -13,7 +13,7 @@
   // 避免红色条永久停留在底部恐吓用户。
   let _errTimer = null;
   function showGlobalError(msg) {
-    const isNet = /Failed to fetch|NetworkError|Network request failed|load failed|timeout/i.test(msg || "");
+    const isNet = /Failed to fetch|NetworkError|Network request failed|load failed|timeout|服务端暂时出错|HTTP 5\d\d/i.test(msg || "");
     let bar = document.getElementById("global-error");
     if (!bar) {
       bar = document.createElement("div");
@@ -22,7 +22,9 @@
         "padding:8px 12px;font-size:13px;z-index:99999;white-space:pre-wrap;box-shadow:0 -2px 8px rgba(0,0,0,.3);transition:opacity .4s";
       document.body.appendChild(bar);
     }
-    bar.textContent = isNet ? "⚠ 网络连接中断，请稍后重试" : "⚠ 页面脚本错误：" + msg;
+    bar.textContent = isNet
+      ? (/服务端暂时出错/.test(msg || "") ? "⚠ " + msg : "⚠ 网络连接中断，请稍后重试")
+      : "⚠ 页面脚本错误：" + msg;
     bar.style.opacity = "1";
     bar.style.display = "block";
     if (_errTimer) clearTimeout(_errTimer);
@@ -85,19 +87,46 @@
   }
 
   async function api(path, opts) {
-    const res = await _rawFetch(path, Object.assign({
-      headers: { "Content-Type": "application/json" },
-    }, opts));
-    let j;
+    const doFetch = async () => {
+      let res;
+      try {
+        res = await _rawFetch(path, Object.assign({
+          headers: { "Content-Type": "application/json" },
+        }, opts));
+      } catch (netErr) {
+        // 网络层失败（Render 免费版休眠/连接被服务端中断）：包装成可重试错误
+        const err = new Error(netErr && netErr.message ? netErr.message : "network error");
+        err.isNet = true;
+        throw err;
+      }
+      let j;
+      try {
+        j = await res.json();
+      } catch (e) {
+        // 服务端返回了非 JSON（通常是 HTML 报错页 / 404 / 5xx 错误页）
+        if (res.status >= 500) {
+          const err = new Error(`服务端暂时出错（HTTP ${res.status}），请刷新页面重试。`);
+          err.isServer = true;
+          throw err;
+        }
+        const text = await res.text().catch(() => "");
+        const err = new Error(`服务端未返回 JSON（HTTP ${res.status}）。\n响应内容前 200 字：\n${text.slice(0, 200)}`);
+        err.isServer = false;
+        throw err;
+      }
+      if (!j.ok) throw new Error(j.msg || `request failed (HTTP ${res.status})`);
+      return j.data;
+    };
     try {
-      j = await res.json();
+      return await doFetch();
     } catch (e) {
-      // 服务端返回了非 JSON（通常是 HTML 报错页 / 404），把真实内容抛出来便于排查
-      const text = await res.text().catch(() => "");
-      throw new Error(`服务端未返回 JSON（HTTP ${res.status}）。可能不是本看板在响应，请检查 5000 端口是否被其他程序占用。\n响应内容前 200 字：\n${text.slice(0, 200)}`);
+      // 5xx 或网络故障：疑似 Render 免费版瞬时抖动，自动重试一次
+      if (e.isServer || e.isNet) {
+        await new Promise((r) => setTimeout(r, 800));
+        return await doFetch();
+      }
+      throw e;
     }
-    if (!j.ok) throw new Error(j.msg || `request failed (HTTP ${res.status})`);
-    return j.data;
   }
   function destroyChart(key) {
     if (charts[key]) { charts[key].destroy(); delete charts[key]; }
