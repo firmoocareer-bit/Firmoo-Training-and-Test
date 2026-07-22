@@ -221,6 +221,13 @@ tbody tr:hover { background: #f8f9ff; }
   th, td { padding: 7px 6px; font-size: 12px; }
 }
 
+/* ---------- 启动加载遮罩 ---------- */
+.boot-mask { position: fixed; inset: 0; background: rgba(26,26,46,.92);
+  display: flex; align-items: center; justify-content: center; z-index: 250; }
+.boot-mask.hide { display: none; }
+.boot-card { background: #fff; border-radius: 14px; padding: 22px 34px; font-size: 16px;
+  color: var(--header-bg); box-shadow: 0 10px 40px rgba(0,0,0,.3); }
+
 /* ---------- 登录遮罩（本地验证；上云替换为 Google SSO） ---------- */
 .auth-mask { position: fixed; inset: 0; background: rgba(26,26,46,.92); display: none;
   align-items: center; justify-content: center; z-index: 200; }
