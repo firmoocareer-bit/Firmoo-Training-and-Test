@@ -18,7 +18,7 @@ if [ -n "$API_BASE" ]; then
     *)   API_BASE="https://$API_BASE.onrender.com" ;; # 裸服务名 firmoo-exam-api
   esac
 fi
-STAMP="2026-07-17.36"
+STAMP="2026-07-17.37"
 echo "window.API_BASE = '${API_BASE}';" > static/config.js
 echo "window.BUILD_STAMP = '${STAMP}';" >> static/config.js
 echo "generated static/config.js -> API_BASE='${API_BASE}', BUILD_STAMP='${STAMP}'"
