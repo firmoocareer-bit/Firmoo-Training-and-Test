@@ -49,6 +49,9 @@ body {
   padding: 4px 11px; border-radius: 20px; color: #cdd3e6;
   border: 1px solid rgba(255,255,255,.1);
 }
+.badge.ok { background: #2a9d8f; color: #fff; border-color: #2a9d8f; }
+.badge.no { background: #e76f51; color: #fff; border-color: #e76f51; }
+.badge.np { background: rgba(255,255,255,.1); color: #9aa3bd; }
 .user-name {
   font-size: 13px; color: #eef1fb; font-weight: 600;
   background: rgba(255,255,255,.1); padding: 4px 12px; border-radius: 20px;
@@ -391,8 +394,10 @@ tbody tr:hover { background: #f8f9ff; }
 .rpt-cards .card .val{font-size:28px;font-weight:700;margin-top:6px;color:#1a1a2e;}
 .rpt-cards .card .val.ok{color:#2a9d8f;}
 .rpt-cards .card .val.no{color:#e76f51;}
-.rpt-qgrid{display:flex;gap:24px;font-size:14px;}
+.rpt-qgrid{display:flex;gap:24px;font-size:14px;flex-wrap:wrap;}
 .rpt-qgrid b{font-size:18px;color:#1a1a2e;}
+.rpt-qgrid .cur{outline:2px solid #4f8cff;border-radius:8px;padding:6px 12px;background:rgba(79,140,255,.14);}
+.hint{font-size:12px;color:#9aa3bd;margin:2px 0 10px;}
 /* 密码框显示/隐藏切换 */
 .pw-wrap{position:relative;display:flex;align-items:center;}
 .pw-wrap input{padding-right:40px;width:100%;}
