@@ -2074,10 +2074,19 @@ class SQLiteStorage(BaseStorage):
             threshold = self.get_points_threshold()
             total = (row or {}).get("total", 0)
             pperiod, ptarget = self.get_points_period()
+            # 季度目标线：按季粒度=每季目标；按月粒度=月目标×3（一季3个月）
+            quarter_target = ptarget * 3 if (pperiod == "month" and ptarget > 0) else ptarget
+            def _qmeets(qv):
+                if ptarget <= 0:
+                    return None  # 周期目标未启用
+                return qv >= quarter_target
             return {"rep_id": rep_id, "year": year, "q1": row["q1"], "q2": row["q2"],
                     "q3": row["q3"], "q4": row["q4"], "total": total,
                     "threshold": threshold, "meets": bool(total >= threshold),
                     "period": pperiod, "period_target": ptarget,
+                    "quarter_target": quarter_target,
+                    "q1_meets": _qmeets(row["q1"]), "q2_meets": _qmeets(row["q2"]),
+                    "q3_meets": _qmeets(row["q3"]), "q4_meets": _qmeets(row["q4"]),
                     "period_points": self.rep_period_points(rep_id, pperiod, year) if ptarget > 0 else 0,
                     "period_meets": bool(ptarget > 0 and self.rep_period_points(rep_id, pperiod, year) >= ptarget)}
         row = self._row(self.conn.execute(
