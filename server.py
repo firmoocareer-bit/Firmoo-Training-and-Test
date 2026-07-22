@@ -37,7 +37,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-17.37"
+BUILD_STAMP = "2026-07-17.38"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
