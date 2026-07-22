@@ -2055,8 +2055,8 @@ class SQLiteStorage(BaseStorage):
     def list_point_years(self) -> list:
         """可筛选的年份列表：日志中出现过的年份 + 当前年（降序）。"""
         cur_year = datetime.datetime.now().year
-        yrs = [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT year FROM points_log WHERE year IS NOT NULL")]
+        yrs = [r[0] for r in self._rows(self.conn.execute(
+            "SELECT DISTINCT year FROM points_log WHERE year IS NOT NULL"))]
         if cur_year not in yrs:
             yrs.append(cur_year)
         return sorted(set(yrs), reverse=True)
