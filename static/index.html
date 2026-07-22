@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>客服考试结果多维看板</title>
-  <link rel="stylesheet" href="styles.css?v=2026-07-17.38">
+  <link rel="stylesheet" href="styles.css?v=2026-07-22.39">
 </head>
 <body>
   <!-- 启动加载遮罩：登录态校验期间显示，避免冷启动时闪现空白/错误视图 -->
@@ -315,12 +315,8 @@
     </div>
     <div class="panel" style="margin-top:12px">
       <div class="section-title" data-i18n="rpt_quarter_detail">季度明细</div>
-      <div class="rpt-qgrid">
-        <div><span data-i18n="pt_q1">Q1</span>: <b id="rpt-q1">0</b></div>
-        <div><span data-i18n="pt_q2">Q2</span>: <b id="rpt-q2">0</b></div>
-        <div><span data-i18n="pt_q3">Q3</span>: <b id="rpt-q3">0</b></div>
-        <div><span data-i18n="pt_q4">Q4</span>: <b id="rpt-q4">0</b></div>
-      </div>
+      <div id="rpt-period-hint" class="hint"></div>
+      <div class="rpt-qgrid" id="rpt-qgrid"></div>
     </div>
     <div class="panel" style="margin-top:12px">
       <div class="section-title" data-i18n="pt_log_title">积分记录</div>
@@ -456,8 +452,8 @@
        background:#1a1a2e;color:#fff;padding:10px 20px;border-radius:8px;z-index:99;"></div>
 
   <script src="chart.umd.js"></script>
-  <script src="i18n.js?v=2026-07-17.38"></script>
-  <script src="config.js?v=2026-07-17.38"></script>
-  <script src="app.js?v=2026-07-17.38"></script>
+  <script src="i18n.js?v=2026-07-22.39"></script>
+  <script src="config.js?v=2026-07-22.39"></script>
+  <script src="app.js?v=2026-07-22.39"></script>
 </body>
 </html>
