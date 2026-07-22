@@ -2598,11 +2598,34 @@
       psv.className = "val";
       ps.style.display = "none";
     }
-    // 季度明细
-    $("#rpt-q1").textContent = p.q1 || 0;
-    $("#rpt-q2").textContent = p.q2 || 0;
-    $("#rpt-q3").textContent = p.q3 || 0;
-    $("#rpt-q4").textContent = p.q4 || 0;
+    // 季度明细（含季度目标线 + 达标徽章）
+    const qT = p.quarter_target || 0;
+    const curQ = Math.floor(new Date().getMonth() / 3) + 1;
+    const qBadge = (m) => {
+      if (m === null || m === undefined)
+        return `<span class="badge np">-</span>`;
+      return `<span class="badge ${m ? "ok" : "no"}">${m ? (T("pt_meet") || "达标") : (T("pt_not_meet") || "未达标")}</span>`;
+    };
+    const qRow = (qn, qv, meets) => {
+      const isCur = qn === curQ;
+      const tgt = qT > 0 ? ` / ${qT}` : "";
+      return `<div class="${isCur ? "cur" : ""}"><span>Q${qn}</span>: <b>${qv || 0}</b>${tgt} ${qBadge(meets)}</div>`;
+    };
+    $("#rpt-qgrid").innerHTML =
+      qRow(1, p.q1, p.q1_meets) + qRow(2, p.q2, p.q2_meets) +
+      qRow(3, p.q3, p.q3_meets) + qRow(4, p.q4, p.q4_meets);
+    // 周期提示
+    const hint = $("#rpt-period-hint");
+    if (p.period_target > 0) {
+      const curLabel = p.period === "month"
+        ? `${new Date().getMonth() + 1}月`
+        : `Q${curQ}`;
+      hint.textContent =
+        `${T("rpt_cur_period") || "当前考核周期"}：${curLabel}（${p.period === "month" ? (T("pt_month") || "按月") : (T("pt_quarter") || "按季")}）`;
+    } else {
+      hint.textContent = T("rpt_period_off") || "周期目标未启用：管理员暂未设置周期目标，无季度达标提醒";
+    }
+    hint.style.display = "block";
     // 积分记录
     const log = await api("/api/points/" + (p.rep_id || "") + "/log?year=" + year);
     $("#rpt-log").innerHTML = log.length ? `<table class="tbl"><thead><tr>
