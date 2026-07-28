@@ -2561,21 +2561,48 @@
     </tr>`).join("")}</tbody></table>` : `<div class="empty">${T("pt_empty")}</div>`;
     $$("#pt-body .pt-log").forEach((a) => a.onclick = () => showPointsLog(a.dataset.rep));
     $("#pt-filter").onchange = renderPoints;
+    // 重算积分按钮（仅管理员）：把任何之前漏发的考试/小测通过积分补齐
+    const ptBtn = $("#pt-recompute");
+    if (ptBtn && !ptBtn.dataset.ready) {
+      ptBtn.dataset.ready = "1";
+      ptBtn.onclick = async () => {
+        if (!confirm(T("pt_recompute_confirm") || "确认重算所有积分？已发放的不会重复。")) return;
+        try {
+          ptBtn.disabled = true;
+          const r = await api("/api/admin/points/recompute", { method: "POST" });
+          alert((T("pt_recompute_done") || "重算完成") + `：考试 +${r.exam_awarded} 条，小测 +${r.mini_quiz_awarded} 条 / 总 ${r.total_attempts} 场考试 / ${r.total_quizzes} 次小测`);
+          renderPoints();
+        } catch (e) {
+          alert((T("pt_recompute_fail") || "重算失败") + "：" + (e.message || e));
+        } finally {
+          ptBtn.disabled = false;
+        }
+      };
+    }
   }
 
   // Q5 客服端：我的积分
   async function renderRepPoints() {
-    const years = await api("/api/points/years");
+    const years = await api("/api/points/years").catch(() => []);
     const ySel = $("#rpt-year");
     if (!ySel.dataset.ready) {
-      ySel.innerHTML = years.map((y) => `<option value="${y}">${y}</option>`).join("");
+      ySel.innerHTML = (years || []).map((y) => `<option value="${y}">${y}</option>`).join("");
       const cur = new Date().getFullYear();
-      ySel.value = years.includes(cur) ? String(cur) : (years[0] != null ? String(years[0]) : String(cur));
+      const validYears = (years || []).map(String);
+      ySel.value = validYears.includes(String(cur)) ? String(cur) : (validYears[0] != null ? validYears[0] : String(cur));
       ySel.dataset.ready = "1";
       ySel.onchange = renderRepPoints;
     }
     const year = ySel.value || String(new Date().getFullYear());
-    const p = await api("/api/points/me?year=" + year);
+    let p;
+    try {
+      p = await api("/api/points/me?year=" + year);
+    } catch (e) {
+      console.warn("[renderRepPoints] points/me failed:", e && e.message);
+      p = { total: 0, threshold: 0, meets: false, period: "quarter", period_target: 0,
+            period_points: 0, quarter_target: 0, q1: 0, q2: 0, q3: 0, q4: 0,
+            q1_meets: null, q2_meets: null, q3_meets: null, q4_meets: null };
+    }
     // 年度卡片
     $("#rpt-year-val").textContent = p.total || 0;
     $("#rpt-year-target-val").textContent = p.threshold || 0;
@@ -2626,9 +2653,14 @@
       hint.textContent = T("rpt_period_off") || "周期目标未启用：管理员暂未设置周期目标，无季度达标提醒";
     }
     hint.style.display = "block";
-    // 积分记录
-    const log = await api("/api/points/" + (p.rep_id || "") + "/log?year=" + year);
-    $("#rpt-log").innerHTML = log.length ? `<table class="tbl"><thead><tr>
+    // 积分记录（防御：失败也继续展示）
+    let log = [];
+    try {
+      log = await api("/api/points/" + (p.rep_id || "") + "/log?year=" + year);
+    } catch (e) {
+      console.warn("[renderRepPoints] points/log failed:", e && e.message);
+    }
+    $("#rpt-log").innerHTML = Array.isArray(log) && log.length ? `<table class="tbl"><thead><tr>
       <th>${T("pt_rule")}</th><th>${T("pt_q")}</th><th>${T("pt_delta")}</th><th>${T("pt_note")}</th><th>${T("pt_time")}</th></tr></thead>
       <tbody>${log.map((l) => `<tr><td>${l.rule_key}</td><td>Q${l.quarter || ""}</td><td>${l.delta > 0 ? "+" : ""}${l.delta}</td>
         <td>${l.note || ""}</td><td>${l.created_at || ""}</td></tr>`).join("")}</tbody></table>`
