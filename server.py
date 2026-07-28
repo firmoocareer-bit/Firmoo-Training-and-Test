@@ -37,7 +37,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-28.41"
+BUILD_STAMP = "2026-07-28.42"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -912,6 +912,37 @@ def api_open_material(mid):
         return fail("未登录", 401)
     storage.mark_material_opened(u.get("rep_id"), mid)
     return ok(msg="已记录浏览")
+
+
+@app.route("/api/materials/<int:mid>/complete", methods=["POST"])
+def api_complete_material(mid):
+    """客服/管理员标记资料已学完。
+    返回 {awarded, status, material_id, monthly_used}。
+    - awarded: 本次实际发放的积分(0 表示未加分)
+    - status: 'awarded'=本次拿到分; 'already_done'=该资料已学过(去重); 'cap_hit'=月度上限已满(本月未得)
+    - monthly_used: 该 rep 当前月已拿资料分次数(成功发分的)
+    """
+    u = current_user()
+    if not u:
+        return fail("未登录", 401)
+    res = storage.complete_material(u.get("rep_id"), mid)
+    # 顺手返回本月已学完次数(下发给前端展示"X/2")
+    from datetime import datetime
+    dt = datetime.now()
+    y, m = dt.year, f"{dt.month:02d}"
+    cnt_row = storage._row(storage.conn.execute(
+        "SELECT COUNT(*) c FROM points_log "
+        "WHERE rep_id=? AND rule_key='material' "
+        "AND substr(created_at,1,4)=? AND substr(created_at,6,2)=?",
+        (u.get("rep_id"), str(y), m)))
+    monthly_used = cnt_row["c"] or 0
+    return ok({
+        "awarded": res.get("awarded", 0),
+        "status": res.get("status", "none"),
+        "material_id": mid,
+        "monthly_used": monthly_used,
+        "monthly_cap": 2,
+    }, "操作成功")
 
 
 @app.route("/api/quiz/draw", methods=["GET"])
