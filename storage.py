@@ -2024,6 +2024,54 @@ class SQLiteStorage(BaseStorage):
             row["meets"] = bool(row["total"] is not None and row["total"] >= threshold)
         return rows
 
+    def recompute_points(self, year: int = None) -> dict:
+        """补发/重算积分：扫描所有通过考试(exam_attempts.passed=1)，
+        对尚未在 points_log 记录的条目重新调 award_points（幂等）。
+        同时对小测通过也补一遍。
+        返回 {exam_awarded: N, mini_quiz_awarded: N, total_attempts: N, total_quizzes: N}。"""
+        awarded_exam = 0
+        awarded_quiz = 0
+        # 1) 在线考试
+        attempts = self._rows(self.conn.execute(
+            "SELECT attempt_id, rep_id, score_rate, passed, total_score, full_score "
+            "FROM exam_attempts WHERE passed=1"))
+        for a in attempts:
+            rid = (a.get("rep_id") or "").strip()
+            if not rid:
+                continue
+            sr = a.get("score_rate")
+            try:
+                pd = self.pass_points_for(sr, passed=True)
+            except Exception:
+                pd = 0
+            if pd and pd > 0:
+                # 幂等：award_points 会先检查 (rep_id, rule_key, ref_type, ref_id) 是否已存在
+                delta = self.award_points(rid, "pass", "attempt", a["attempt_id"],
+                                          "通过在线考试(补发)", delta=pd)
+                if delta > 0:
+                    awarded_exam += 1
+        # 2) 小测（mini_quiz.passed=1 + 已绑 rep_id）
+        try:
+            quizzes = self._rows(self.conn.execute(
+                "SELECT quiz_id, rep_id, passed FROM mini_quiz WHERE passed=1 AND rep_id IS NOT NULL"))
+        except Exception:
+            quizzes = []
+        for q in quizzes:
+            rid = (q.get("rep_id") or "").strip()
+            if not rid:
+                continue
+            delta = self.award_points(rid, "mini_quiz", "quiz", q["quiz_id"], "小测通过(补发)")
+            if delta > 0:
+                awarded_quiz += 1
+        self.conn.commit()
+        return {
+            "exam_awarded": awarded_exam,
+            "mini_quiz_awarded": awarded_quiz,
+            "total_attempts": len(attempts),
+            "total_quizzes": len(quizzes),
+            "year_filter": year,
+        }
+
     def points_year_summary(self, year: int = None) -> list:
         """管理端积分总览（按年度）：每人 Q1~Q4 各季度积分 + 年度合计 + 是否达标。
         year 缺省取当前年。跨年自动归零（无记录即 0）；历史年可筛选查看。"""
@@ -2071,8 +2119,11 @@ class SQLiteStorage(BaseStorage):
                 "COALESCE(SUM(CASE WHEN quarter=4 THEN delta ELSE 0 END),0) q4, "
                 "COALESCE(SUM(delta),0) total FROM points_log WHERE rep_id=? AND year=?",
                 (rep_id, year)))
+            # 防御：行可能为 None（Postgres 在极端场景下 0 行时仍走 ON CONFLICT 等），转成全 0 默认值
+            if not row:
+                row = {"q1": 0, "q2": 0, "q3": 0, "q4": 0, "total": 0}
             threshold = self.get_points_threshold()
-            total = (row or {}).get("total", 0)
+            total = row.get("total", 0)
             pperiod, ptarget = self.get_points_period()
             # 季度目标线：按季粒度=每季目标；按月粒度=月目标×3（一季3个月）
             quarter_target = ptarget * 3 if (pperiod == "month" and ptarget > 0) else ptarget
@@ -2080,15 +2131,22 @@ class SQLiteStorage(BaseStorage):
                 if ptarget <= 0:
                     return None  # 周期目标未启用
                 return qv >= quarter_target
-            return {"rep_id": rep_id, "year": year, "q1": row["q1"], "q2": row["q2"],
-                    "q3": row["q3"], "q4": row["q4"], "total": total,
+            # 防御：period_points 计算独立 try，单点失败不影响主流程
+            try:
+                pp = self.rep_period_points(rep_id, pperiod, year) if ptarget > 0 else 0
+            except Exception as _e:
+                print(f"[points] rep_period_points failed for {rep_id}: {_e}")
+                pp = 0
+            return {"rep_id": rep_id, "year": year, "q1": row.get("q1", 0),
+                    "q2": row.get("q2", 0), "q3": row.get("q3", 0),
+                    "q4": row.get("q4", 0), "total": total,
                     "threshold": threshold, "meets": bool(total >= threshold),
                     "period": pperiod, "period_target": ptarget,
                     "quarter_target": quarter_target,
-                    "q1_meets": _qmeets(row["q1"]), "q2_meets": _qmeets(row["q2"]),
-                    "q3_meets": _qmeets(row["q3"]), "q4_meets": _qmeets(row["q4"]),
-                    "period_points": self.rep_period_points(rep_id, pperiod, year) if ptarget > 0 else 0,
-                    "period_meets": bool(ptarget > 0 and self.rep_period_points(rep_id, pperiod, year) >= ptarget)}
+                    "q1_meets": _qmeets(row.get("q1", 0)), "q2_meets": _qmeets(row.get("q2", 0)),
+                    "q3_meets": _qmeets(row.get("q3", 0)), "q4_meets": _qmeets(row.get("q4", 0)),
+                    "period_points": pp,
+                    "period_meets": bool(ptarget > 0 and pp >= ptarget)}
         row = self._row(self.conn.execute(
             "SELECT * FROM points_account WHERE rep_id=?", (rep_id,)))
         pperiod, ptarget = self.get_points_period()
