@@ -1145,11 +1145,15 @@ class SQLiteStorage(BaseStorage):
             (int(data["session_id"]), data["rep_id"].strip(), data["name"].strip(),
              json.dumps(subjects, ensure_ascii=False), total, passed, score_rate, full_score, _now()))
         self.conn.commit()
-        # 增强3-需求2：通过考试仅给分层积分（不叠参与基础分），不通过无分
+        # 通过考试 = 基础分(participate) + 分层档位分(pass)；不通过无分
         try:
             rid = data["rep_id"].strip()
             if passed == 1:
+                rules = self.get_points_rules()
+                base = int((rules or {}).get("participate", 0) or 0)
                 pd = self.pass_points_for(score_rate, passed=True)
+                if base > 0:
+                    self.award_points(rid, "participate", "result", cur.lastrowid, "通过考试基础分", delta=base)
                 if pd:
                     self.award_points(rid, "pass", "result", cur.lastrowid, "通过考试", delta=pd)
         except Exception as _e:
@@ -2025,13 +2029,17 @@ class SQLiteStorage(BaseStorage):
         return rows
 
     def recompute_points(self, year: int = None) -> dict:
-        """补发/重算积分：扫描所有通过考试(exam_attempts.passed=1)，
-        对尚未在 points_log 记录的条目重新调 award_points（幂等）。
+        """补发/重算积分:扫描所有通过考试(exam_attempts.passed=1),
+        按当前 score_rate 重新算档位 → 减旧 + 增新(支持档位升降补发),
         同时对小测通过也补一遍。
-        返回 {exam_awarded: N, mini_quiz_awarded: N, total_attempts: N, total_quizzes: N}。"""
+        返回 {exam_awarded: N, mini_quiz_awarded: N, total_attempts: N, total_quizzes: N, exam_adjusted: N}。
+        - exam_awarded: 本次新增积分的 attempt 数
+        - exam_adjusted: 调整过(减旧+补新)档位的 attempt 数
+        """
         awarded_exam = 0
+        adjusted_exam = 0
         awarded_quiz = 0
-        # 1) 在线考试
+        # 1) 在线考试:先按当前分数率算档位,再决定清旧/补新
         attempts = self._rows(self.conn.execute(
             "SELECT attempt_id, rep_id, score_rate, passed, total_score, full_score "
             "FROM exam_attempts WHERE passed=1"))
@@ -2044,13 +2052,40 @@ class SQLiteStorage(BaseStorage):
                 pd = self.pass_points_for(sr, passed=True)
             except Exception:
                 pd = 0
+            # 先清旧 pass + participate log,并把金额从 account 扣回,使后续 award 反映真实差值。
+            old_rows = self._rows(self.conn.execute(
+                "SELECT log_id, delta, rule_key FROM points_log "
+                "WHERE rule_key IN ('pass','participate') AND ref_type='attempt' AND ref_id=?",
+                (str(a["attempt_id"]),)))
+            if old_rows:
+                # 跨库兼容:SQLite 无 GREATEST 函数,改用 Python 端 max 计算
+                deduct = sum(o["delta"] for o in old_rows)
+                acct = self._row(self.conn.execute(
+                    "SELECT total FROM points_account WHERE rep_id=?", (rid,)))
+                new_total = max(0, (acct["total"] if acct else 0) - deduct)
+                self.conn.execute(
+                    "UPDATE points_account SET total=?, updated_at=? WHERE rep_id=?",
+                    (new_total, _now(), rid))
+                for old in old_rows:
+                    self.conn.execute("DELETE FROM points_log WHERE log_id=?", (old["log_id"],))
+                adjusted_exam += 1
+            # 重发：基础分(participate) + 档位分(pass)，补发历史漏发的参与基础分
+            rules = self.get_points_rules()
+            base = int((rules or {}).get("participate", 0) or 0)
+            awarded_this = False
+            if base > 0:
+                d0 = self.award_points(rid, "participate", "attempt", a["attempt_id"],
+                                       "通过考试基础分(补发)", delta=base)
+                if d0 > 0:
+                    awarded_this = True
             if pd and pd > 0:
-                # 幂等：award_points 会先检查 (rep_id, rule_key, ref_type, ref_id) 是否已存在
                 delta = self.award_points(rid, "pass", "attempt", a["attempt_id"],
                                           "通过在线考试(补发)", delta=pd)
                 if delta > 0:
-                    awarded_exam += 1
-        # 2) 小测（mini_quiz.passed=1 + 已绑 rep_id）
+                    awarded_this = True
+            if awarded_this:
+                awarded_exam += 1
+        # 2) 小测(mini_quiz.passed=1 + 已绑 rep_id)
         try:
             quizzes = self._rows(self.conn.execute(
                 "SELECT quiz_id, rep_id, passed FROM mini_quiz WHERE passed=1 AND rep_id IS NOT NULL"))
@@ -2066,6 +2101,7 @@ class SQLiteStorage(BaseStorage):
         self.conn.commit()
         return {
             "exam_awarded": awarded_exam,
+            "exam_adjusted": adjusted_exam,
             "mini_quiz_awarded": awarded_quiz,
             "total_attempts": len(attempts),
             "total_quizzes": len(quizzes),
@@ -2146,7 +2182,9 @@ class SQLiteStorage(BaseStorage):
                     "q1_meets": _qmeets(row.get("q1", 0)), "q2_meets": _qmeets(row.get("q2", 0)),
                     "q3_meets": _qmeets(row.get("q3", 0)), "q4_meets": _qmeets(row.get("q4", 0)),
                     "period_points": pp,
-                    "period_meets": bool(ptarget > 0 and pp >= ptarget)}
+                    "period_meets": bool(ptarget > 0 and pp >= ptarget),
+                    "material_monthly_used": self._material_monthly_used(rep_id),
+                    "material_monthly_cap": 2}
         row = self._row(self.conn.execute(
             "SELECT * FROM points_account WHERE rep_id=?", (rep_id,)))
         pperiod, ptarget = self.get_points_period()
@@ -2331,12 +2369,61 @@ class SQLiteStorage(BaseStorage):
             self.conn.commit()
         return True
 
-    def complete_material(self, rep_id, material_id) -> int:
+    def _is_material_monthly_cap_hit(self, rep_id, max_per_month: int = 2) -> bool:
+        """资料学完分月度上限：每月前 max_per_month 次拿分,超出时仅标记完成不发放。
+        用 substr(created_at,1,7) 而非 month 列,免迁移(双库通用)。"""
+        rep_id = (rep_id or "").strip()
+        if not rep_id:
+            return True
+        from datetime import datetime
+        dt = datetime.now()
+        y, m = dt.year, f"{dt.month:02d}"
+        row = self._row(self.conn.execute(
+            "SELECT COUNT(*) c FROM points_log "
+            "WHERE rep_id=? AND rule_key='material' "
+            "AND substr(created_at,1,4)=? AND substr(created_at,6,2)=?",
+            (rep_id, str(y), m)))
+        return (row["c"] or 0) >= max_per_month
+
+    def _material_monthly_used(self, rep_id) -> int:
+        """统计当前月已成功发放的资料学完分次数(用于积分页 / 学完按钮反馈)。"""
+        rep_id = (rep_id or "").strip()
+        if not rep_id:
+            return 0
+        from datetime import datetime
+        dt = datetime.now()
+        y, m = dt.year, f"{dt.month:02d}"
+        row = self._row(self.conn.execute(
+            "SELECT COUNT(*) c FROM points_log "
+            "WHERE rep_id=? AND rule_key='material' "
+            "AND substr(created_at,1,4)=? AND substr(created_at,6,2)=?",
+            (rep_id, str(y), m)))
+        return row["c"] or 0
+
+    def complete_material(self, rep_id, material_id) -> dict:
+        """标记资料已学完并发放资料分。
+        返回 {awarded:int, status:'awarded'|'already_done'|'cap_hit'}。
+        - awarded: 本次实际发放的增量
+        - status: awarded=本次拿到分; already_done=该资料已学过且发过(0分);cap_hit=该资料未学过但本月已超限(0分)。
+        """
+        rep_id = (rep_id or "").strip()
+        if not rep_id:
+            return {"awarded": 0, "status": "none"}
+        existing = self._row(self.conn.execute(
+            "SELECT 1 FROM points_log WHERE rep_id=? AND rule_key='material' "
+            "AND ref_type='material' AND ref_id=?",
+            (rep_id, str(material_id))))
         self.conn.execute(
             "INSERT OR REPLACE INTO study_records (rep_id, material_id, status, progress, created_at) "
             "VALUES (?,?, 'completed', 100, ?)", (rep_id, material_id, _now()))
-        self.conn.commit()
-        return self.award_points(rep_id, "material", "material", material_id, "学完资料")
+        if existing:
+            self.conn.commit()
+            return {"awarded": 0, "status": "already_done"}
+        if self._is_material_monthly_cap_hit(rep_id):
+            self.conn.commit()
+            return {"awarded": 0, "status": "cap_hit"}
+        delta = self.award_points(rep_id, "material", "material", material_id, "学完资料")
+        return {"awarded": delta, "status": "awarded" if delta > 0 else "already_done"}
 
     def draw_quiz_questions(self, dim_id, n) -> list:
         """随机抽取某维度客观题（不返回正确答案/解析，由服务端判分）。"""
@@ -3370,11 +3457,15 @@ class SQLiteStorage(BaseStorage):
                 (session["session_id"], attempt["rep_id"], rep_name,
                  json.dumps(subjects, ensure_ascii=False), total, passed, score_rate, full_score, _now()))
         self.conn.commit()
-        # 积分：不通过无分；通过只取分层最高档（不叠参与基础分）
+        # 积分：不通过无分；通过 = 基础分(participate) + 分层档位分(pass)
         try:
             rid = attempt["rep_id"]
             if passed == 1:
+                rules = self.get_points_rules()
+                base = int((rules or {}).get("participate", 0) or 0)
                 pd = self.pass_points_for(score_rate, passed=True)
+                if base > 0:
+                    self.award_points(rid, "participate", "attempt", attempt_id, "通过考试基础分", delta=base)
                 if pd:
                     self.award_points(rid, "pass", "attempt", attempt_id, "通过在线考试", delta=pd)
         except Exception as _e:
@@ -3495,6 +3586,28 @@ class SQLiteStorage(BaseStorage):
             "UPDATE exam_attempts SET manual_score=?, total_score=?, score_rate=?, full_score=?, passed=?, status='graded' WHERE attempt_id=?",
             (round(manual, 2), round(total, 2), round(sr, 4) if sr is not None else None, full_score, passed, attempt_id))
         self.conn.commit()
+        # 简答题判分后总分/档位可能升高或降低(如 88% 客观通过发 +30,简答后 96% 应发 +40)。
+        # _sync_attempt_to_results 内的 award_points 会按 (rule_key,ref_type,ref_id=attempt_id) 去重,
+        # 不清掉旧日志则新档被吞,客服丢分。这里减旧 + _sync_attempt_to_results 按新档重发。
+        try:
+            old_rows = self._rows(self.conn.execute(
+                "SELECT log_id, delta, rule_key FROM points_log "
+                "WHERE rule_key IN ('pass','participate') AND ref_type='attempt' AND ref_id=?",
+                (str(attempt_id),)))
+            if old_rows:
+                # 跨库兼容:SQLite 无 GREATEST 函数,改用 Python 端 max 计算
+                deduct = sum(o["delta"] for o in old_rows)
+                acct = self._row(self.conn.execute(
+                    "SELECT total FROM points_account WHERE rep_id=?", (attempt["rep_id"],)))
+                new_total = max(0, (acct["total"] if acct else 0) - deduct)
+                self.conn.execute(
+                    "UPDATE points_account SET total=?, updated_at=? WHERE rep_id=?",
+                    (new_total, now, attempt["rep_id"]))
+                for old in old_rows:
+                    self.conn.execute("DELETE FROM points_log WHERE log_id=?", (old["log_id"],))
+                self.conn.commit()
+        except Exception as _e:
+            print(f"[grade_essay] clear old award skipped: {_e}")
         self._sync_attempt_to_results(attempt_id)
         return self.get_attempt(attempt_id)
 
