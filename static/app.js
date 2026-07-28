@@ -2641,6 +2641,15 @@
     $("#rpt-qgrid").innerHTML =
       qRow(1, p.q1, p.q1_meets) + qRow(2, p.q2, p.q2_meets) +
       qRow(3, p.q3, p.q3_meets) + qRow(4, p.q4, p.q4_meets);
+    // 资料月度计数（每月前 2 份学完拿分）
+    const matCard = $("#rpt-mat-monthly");
+    if (matCard) {
+      const used = p.material_monthly_used || 0;
+      const cap = p.material_monthly_cap || 2;
+      const full = used >= cap;
+      matCard.innerHTML = `<span class="muted">${T("mat_monthly_used").replace("%d", used).replace("%d", cap)}</span>`
+        + (full ? ` <span class="badge np">${T("mat_cap_hit")}</span>` : "");
+    }
     // 周期提示
     const hint = $("#rpt-period-hint");
     if (p.period_target > 0) {
@@ -2810,15 +2819,58 @@
     if (m.content) body += `<div class="mat-detail-text" style="margin:10px 0">${escapeHtml(m.content).replace(/\n/g, "<br>")}</div>`;
     if (m.file_path) body += `<p><a class="btn small" href="/api/materials/${m.material_id}/file" target="_blank">${T("mat_download")}</a></p>`;
     if (m.url) body += `<p><a class="btn small" href="${escapeHtml(m.url)}" target="_blank">${T("mat_open_link")}</a></p>`;
-    body += `<div style="margin-top:10px">` + dimIds.map((d) => {
-      const dn = dims.find((x) => String(x.dim_id) === String(d));
-      return `<button class="btn mat-detail-quiz" data-dim="${d}" data-name="${escapeHtml((dn && (dn.name_cn || dn.name_en)) || String(d))}">${T("mat_quiz")}·${escapeHtml((dn && (dn.name_cn || dn.name_en)) || String(d))}</button>`;
-    }).join(" ") + `</div></div>`;
+    body += `<div class="muted mat-detail-hint" style="margin-top:6px;font-size:12px">${T("mat_monthly_hint")}</div>`;
+    body += `<div class="mat-detail-actions" data-mid="${m.material_id}" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">`
+      + `<button class="btn mat-detail-complete" id="mat-detail-complete">${T("mat_mark_complete")}</button>`
+      + dimIds.map((d) => {
+          const dn = dims.find((x) => String(x.dim_id) === String(d));
+          return `<button class="btn mat-detail-quiz" data-dim="${d}" data-name="${escapeHtml((dn && (dn.name_cn || dn.name_en)) || String(d))}">${T("mat_quiz")}·${escapeHtml((dn && (dn.name_cn || dn.name_en)) || String(d))}</button>`;
+        }).join(" ")
+      + `</div></div>`;
     $("#modalTitle").textContent = m.title || T("mat_title");
     $("#modalBody").innerHTML = body;
     $("#modalSave").style.display = "none";
     $("#modalMask").classList.add("show");
     $$(".mat-detail-quiz").forEach((qb) => qb.onclick = () => takeQuiz(qb.dataset.dim, qb.dataset.name));
+    $$("#mat-detail-complete").forEach((cb) => cb.onclick = completeCurrentMaterial);
+  }
+
+  function currentMaterialId() {
+    const el = document.querySelector(".mat-detail-actions");
+    return el && el.dataset && el.dataset.mid ? el.dataset.mid : null;
+  }
+
+  async function completeCurrentMaterial() {
+    const btn = $("#mat-detail-complete");
+    const mid = currentMaterialId();
+    if (!mid) { alert("Material not found"); return; }
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api("/api/materials/" + mid + "/complete", { method: "POST" });
+      const st = res.status || "none";
+      let msg = "";
+      if (st === "awarded") {
+        msg = T("mat_completed_done").replace("%d", res.awarded);
+      } else if (st === "already_done") {
+        msg = T("mat_completed_no_pts").replace("%s", T("mat_already_done"));
+      } else if (st === "cap_hit") {
+        msg = T("mat_completed_no_pts").replace("%s", T("mat_cap_hit"));
+      } else {
+        msg = T("mat_already_done");
+      }
+      // 移除任何旧反馈
+      $$(".mat-complete-feedback").forEach((e) => e.remove());
+      const fb = document.createElement("div");
+      fb.className = "muted mat-complete-feedback";
+      fb.style.marginTop = "8px";
+      fb.textContent = `${msg} · ${T("mat_monthly_used").replace("%d", res.monthly_used).replace("%d", res.monthly_cap)}`;
+      const actions = document.querySelector(".mat-detail-actions");
+      if (actions) actions.after(fb);
+    } catch (e) {
+      alert("Error: " + (e && e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   function takeQuiz(dimId, title) {
