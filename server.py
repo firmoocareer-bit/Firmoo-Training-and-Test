@@ -37,7 +37,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-22.39"
+BUILD_STAMP = "2026-07-28.40"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -223,6 +223,32 @@ def ok(data=None, msg=""):
 def fail(msg, code=400):
     return jsonify({"ok": False, "msg": msg}), code
 
+
+# ---------------------------------------------------------------------------
+# 全局错误处理：未捕获异常一律返回 JSON，避免前端看到 HTML 500 页
+# ---------------------------------------------------------------------------
+import logging
+import traceback
+_logger = logging.getLogger("werkzeug")  # gunicorn access/error log
+
+@app.errorhandler(Exception)
+def _all_exceptions(e):
+    code = getattr(e, "code", 500) if hasattr(e, "code") else 500
+    if hasattr(e, "code") and isinstance(e.code, int) and 400 <= e.code < 500:
+        # 让 Flask 自带的 4xx（如 404）按原样返回
+        return e
+    try:
+        from flask import got_request_exception
+        _logger.error("UNCAUGHT %s on %s %s: %s\n%s",
+                      type(e).__name__, request.method, request.path, e,
+                      traceback.format_exc())
+    except Exception:
+        print("UNCAUGHT", type(e).__name__, str(e)[:200])
+    return jsonify({
+        "ok": False,
+        "msg": f"内部错误 {type(e).__name__}: {str(e)[:200]}",
+        "exc_type": type(e).__name__,
+    }), 500
 
 # ---------------------------------------------------------------------------
 # 人员（客服总表）
@@ -742,7 +768,25 @@ def api_points_me():
     u = current_user()
     if not u:
         return fail("未登录", 401)
-    return ok(storage.rep_points(u.get("rep_id"), year=datetime.datetime.now().year))
+    try:
+        return ok(storage.rep_points(u.get("rep_id"), year=datetime.datetime.now().year))
+    except Exception as e:
+        # 防御：即便 storage 内部抛错，也返回 JSON 而不是 HTML
+        return fail(f"积分获取失败: {type(e).__name__}: {str(e)[:200]}", 500)
+
+
+@app.route("/api/admin/points/recompute", methods=["POST"])
+def api_admin_recompute_points():
+    """重算/补发所有积分：扫描所有通过的考试和小测，对尚未在 points_log 记录的条目重新发分。
+    幂等：已发过的不会被重复发。"""
+    u = current_user()
+    if not u or u.get("role") != "admin":
+        return fail("需要管理员权限", 403)
+    try:
+        res = storage.recompute_points()
+        return ok(res, f"补发完成：考试 +{res['exam_awarded']} 条，小测 +{res['mini_quiz_awarded']} 条")
+    except Exception as e:
+        return fail(f"重算失败: {type(e).__name__}: {str(e)[:200]}", 500)
 
 
 @app.route("/api/points/<rep_id>/log", methods=["GET"])
