@@ -799,10 +799,19 @@ class SQLiteStorage(BaseStorage):
 
     def delete_rep(self, rep_id: str) -> None:
         # 同步清理该客服的成绩与考试会话（避免孤儿数据）
+        # 与 batch_delete_reps 对齐：必须先清所有外键引用 cs_reps(rep_id) 的子表，
+        # 否则 Postgres 上会触发 ForeignKeyViolation 报 500。
+        # 顺序：先删依赖 exam_attempts/quiz_id 等的子表,再删父表,最后删 cs_reps。
         self.conn.execute("DELETE FROM exam_answers WHERE attempt_id IN (SELECT attempt_id FROM exam_attempts WHERE rep_id=?)", (rep_id,))
         self.conn.execute("DELETE FROM exam_attempts WHERE rep_id=?", (rep_id,))
         self.conn.execute("DELETE FROM exam_results WHERE rep_id=?", (rep_id,))
+        self.conn.execute("DELETE FROM exam_assignments WHERE rep_id=?", (rep_id,))
         self.conn.execute("DELETE FROM accounts WHERE rep_id=?", (rep_id,))
+        # 无外键回指的孤儿记录一并清理,保持数据干净
+        self.conn.execute("DELETE FROM mini_quiz WHERE rep_id=?", (rep_id,))
+        self.conn.execute("DELETE FROM study_records WHERE rep_id=?", (rep_id,))
+        self.conn.execute("DELETE FROM points_log WHERE rep_id=?", (rep_id,))
+        self.conn.execute("DELETE FROM points_account WHERE rep_id=?", (rep_id,))
         self.conn.execute("DELETE FROM cs_reps WHERE rep_id=?", (rep_id,))
         self.conn.commit()
 
