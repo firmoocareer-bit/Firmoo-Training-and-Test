@@ -490,6 +490,11 @@ class BaseStorage(ABC):
     def batch_view(self, session_id: int) -> dict: ...
 
     @abstractmethod
+    def batch_export_excel(self, session_id: int) -> bytes:
+        """导出批次成绩 Excel（客服名 + 每题结果 + 总分 + 得分率 + 是否通过）。
+        返回 xlsx 文件的 bytes，由调用方用 send_file 回传。"""
+
+    @abstractmethod
     def period_view(self, start: str, end: str) -> dict: ...
 
     @abstractmethod
@@ -1754,6 +1759,120 @@ class SQLiteStorage(BaseStorage):
             "dimension_distribution": dim_dist,
             "no_shows": self.batch_no_shows(session_id),
         }
+
+    def batch_export_excel(self, session_id: int) -> bytes:
+        """导出批次成绩 Excel：客服名 + 每题结果 + 总分 + 得分率 + 是否通过。
+
+        返回 xlsx 文件的 bytes（由 server 端用 send_file 回传下载）。
+        - 在线考试（session.note 含 paper_id）：展开逐题结果（✓/✗/待判）。
+        - Excel/手动导入批次（无 paper_id）：无逐题明细，仅导出汇总列。
+        """
+        import io
+        import openpyxl
+        from openpyxl.styles import Font, Alignment, PatternFill
+
+        session = self.get_session(session_id)
+        if not session:
+            raise ValueError("未找到该批次")
+        exam_name = session.get("exam_name") or "exam"
+        batch = session.get("batch") or ""
+        exam_date = session.get("exam_date") or ""
+
+        # 该批次成绩汇总（与 batch_view 同源）
+        results = self._rows(self.conn.execute(
+            "SELECT r.rep_id, r.name, r.total, r.full_score, r.score_rate, r.passed "
+            "FROM exam_results r WHERE r.session_id=? ORDER BY r.total DESC", (session_id,)))
+
+        # 解析 paper_id（在线考试才有逐题明细）
+        note = session.get("note") or ""
+        m = re.search(r"paper_id=(\d+)", note)
+        paper_id = int(m.group(1)) if m else None
+
+        # 题型短标签
+        qtype_short = {"single": "单", "multiple": "多", "judge": "判", "essay": "简"}
+
+        # 逐题元信息（顺序 + 题型）
+        q_meta = []
+        if paper_id:
+            pq = self._rows(self.conn.execute(
+                "SELECT pq.question_id, pq.seq, q.q_type "
+                "FROM paper_questions pq JOIN questions q ON q.question_id=pq.question_id "
+                "WHERE pq.paper_id=? ORDER BY pq.seq ASC", (paper_id,)))
+            for i, q in enumerate(pq, 1):
+                q_meta.append((q["question_id"], f"题{i}({qtype_short.get(q['q_type'], '?')})"))
+
+        # 组装表头
+        header = ["工号", "姓名"]
+        if paper_id:
+            header += [label for _, label in q_meta]
+        header += ["总分", "得分率", "是否通过"]
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Batch Result"
+        ws.append([f"{exam_name} [{batch}] {exam_date} 成绩明细"])
+        if not paper_id:
+            ws.append(["（该批次为导入/手动成绩，无逐题明细，仅导出汇总）"])
+        ws.append([])
+        ws.append(header)
+
+        # 每个客服一行
+        for r in results:
+            rep_id = r["rep_id"]
+            name = r["name"]
+            row = [rep_id, name]
+            if paper_id:
+                att = self._row(self.conn.execute(
+                    "SELECT attempt_id FROM exam_attempts WHERE paper_id=? AND rep_id=? "
+                    "ORDER BY attempt_id DESC LIMIT 1", (paper_id, rep_id)))
+                ans_map = {}
+                if att:
+                    aids = self._rows(self.conn.execute(
+                        "SELECT question_id, is_correct, score FROM exam_answers WHERE attempt_id=?",
+                        (att["attempt_id"],)))
+                    for a in aids:
+                        ans_map[a["question_id"]] = a
+                for qid, _ in q_meta:
+                    a = ans_map.get(qid)
+                    if a is None:
+                        row.append("—")
+                    elif a["is_correct"] is None:
+                        # 简答题待人工判分
+                        row.append(f'{a["score"] or 0}分')
+                    elif a["is_correct"]:
+                        row.append("✓")
+                    else:
+                        row.append("✗")
+            total = r["total"]
+            sr = r["score_rate"]
+            row.append(round(total, 2) if total is not None else "—")
+            if sr is not None:
+                row.append(f"{sr*100:.1f}%" if sr <= 1.0 else f"{sr:.1f}%")
+            else:
+                row.append("—")
+            row.append("通过" if r["passed"] else "未通过")
+            ws.append(row)
+
+        # 样式：加粗表头行 + 列宽
+        hdr_row = ws[3]
+        for c in hdr_row:
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        # 简答/待判单元格轻度高亮，便于辨识
+        warn_fill = PatternFill("solid", fgColor="FFF2CC")
+        for row in ws.iter_rows(min_row=4):
+            for c in row:
+                if isinstance(c.value, str) and "分" in c.value:
+                    c.fill = warn_fill
+        # 列宽
+        widths = [12, 14] + ([10] * len(q_meta) if paper_id else []) + [10, 10, 10]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        ws.freeze_panes = "A4"
+
+        bio = io.BytesIO()
+        wb.save(bio)
+        return bio.getvalue()
 
     def _rate_pct(self, row: dict):
         """把一行成绩换算成得分率百分比（0-100）。优先用 score_rate，否则 total/full_score。"""
