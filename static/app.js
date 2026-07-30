@@ -447,8 +447,39 @@
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
     });
     const exBtn = document.getElementById("bv-export-btn");
-    if (exBtn) exBtn.addEventListener("click", () => {
-      window.location.href = `/api/views/batch/export?session_id=${encodeURIComponent(sid)}`;
+    if (exBtn) exBtn.addEventListener("click", async () => {
+      const old = exBtn.textContent;
+      exBtn.disabled = true;
+      exBtn.textContent = T("bv_export_loading");
+      try {
+        // 必须用 API_BASE 拼绝对 URL：前端是独立静态站(/api/... 相对路径会打到前端域 404)
+        const res = await fetch(
+          `${API_BASE}/api/views/batch/export?session_id=${encodeURIComponent(sid)}`,
+          { credentials: "include" }
+        );
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status}${txt ? ": " + txt.slice(0, 200) : ""}`);
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get("Content-Disposition") || "";
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        const fname = m ? decodeURIComponent(m[1]) : `batch_${sid}.xlsx`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert(T("bv_export_fail") + ": " + e.message);
+      } finally {
+        exBtn.disabled = false;
+        exBtn.textContent = old;
+      }
     });
   }
 
