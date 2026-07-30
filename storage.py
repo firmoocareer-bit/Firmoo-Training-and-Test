@@ -1532,9 +1532,14 @@ class SQLiteStorage(BaseStorage):
 
     # ---- 维度分析 ----
     def exam_dimension_distribution(self, exam_name) -> dict:
-        """一场考试中各知识维度的题目占比（基于题→维度映射）。"""
+        """一场考试中各知识维度的题目占比（基于题→维度映射）。
+
+        注意：Postgres 严格 GROUP BY 模式要求 SELECT 中所有非聚合列必须出在 GROUP BY 或聚合函数。
+        dim_id → name 是 1:1 关系，用 MAX() 包裹 name_cn/name_en 双库都安全。
+        SQLite 本身宽松（隐蔽），所以这个 bug 在本地不爆、只在 Neon/Postgres 暴露。
+        """
         rows = self._rows(self.conn.execute(
-            "SELECT q.dim_id, d.name_cn, d.name_en, COUNT(*) c "
+            "SELECT q.dim_id, MAX(d.name_cn) AS name_cn, MAX(d.name_en) AS name_en, COUNT(*) c "
             "FROM exam_question_dimensions q "
             "JOIN knowledge_dimensions d ON q.dim_id=d.dim_id "
             "WHERE q.exam_name=? GROUP BY q.dim_id", (exam_name,)))
