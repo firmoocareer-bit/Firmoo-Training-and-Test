@@ -422,7 +422,10 @@
     $("#bv-body").innerHTML = `
       <div class="bv-head">
         <div class="bv-title">${escapeHtml(sess.exam_name || "—")} <span class="muted">[${escapeHtml(sess.batch || "—")}] ${escapeHtml(sess.exam_date || "—")}</span></div>
-        <div class="bv-pass">${T("bv_passline")}: ${passLine}</div>
+        <div class="bv-actions">
+          <div class="bv-pass">${T("bv_passline")}: ${passLine}</div>
+          <button id="bv-export-btn" class="btn btn-sm">${T("bv_export")}</button>
+        </div>
       </div>
       <div class="kpi-grid">
         <div class="kpi"><div class="label">${T("bv_count")}</div><div class="value">${s.count}</div></div>
@@ -442,6 +445,10 @@
         datasets: [{ label: T("bv_dist_label"), data: Object.values(d.distribution), backgroundColor: "#4361ee" }],
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
+    });
+    const exBtn = document.getElementById("bv-export-btn");
+    if (exBtn) exBtn.addEventListener("click", () => {
+      window.location.href = `/api/views/batch/export?session_id=${encodeURIComponent(sid)}`;
     });
   }
 
