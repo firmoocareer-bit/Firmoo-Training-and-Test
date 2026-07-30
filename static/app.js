@@ -392,9 +392,11 @@
   function recordsTable(rows) {
     if (!rows.length) return `<div class="empty">${T("iv_no_data")}</div>`;
     return `<table><thead><tr>
+      <th>${T("th_rep")}</th><th>${T("th_name")}</th>
       <th>${T("th_exam")}</th><th>${T("th_batch")}</th><th>${T("th_date")}</th>
       <th>${T("th_qcount")}</th><th>${T("th_score")}</th><th>${T("th_full")}</th><th>${T("th_rate")}</th><th>${T("th_pass")}</th>
       </tr></thead><tbody>${rows.map((r) => `<tr>
+        <td>${escapeHtml(r.rep_id || "")}</td><td>${escapeHtml(r.name || "")}</td>
         <td>${r.exam_name}</td><td>${r.batch}</td><td>${r.exam_date}</td>
         <td>${r.subjects ? Object.keys(r.subjects).length + " 题" : "—"}</td>
         <td>${r.total != null ? r.total : "—"}</td>
