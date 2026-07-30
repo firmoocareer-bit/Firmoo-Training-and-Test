@@ -37,7 +37,7 @@ ADMIN_PW = os.environ.get("ADMIN_PW", "admin123")  # 上云前务必修改；云
 ADMIN_SAFE_KEY = os.environ.get("ADMIN_SAFE_KEY", "firmoo-admin-123")  # 修改密码的安全密钥
 
 # 构建时间戳：用来确认线上跑的是不是最新代码（避免旧 pyc / 端口被占的"幽灵服务"）
-BUILD_STAMP = "2026-07-30.45"
+BUILD_STAMP = "2026-07-30.46"
 
 # ---------------------------------------------------------------------------
 # 跨域（前后端分离部署：前端 Static Site + 后端 Web Service 跨域）
@@ -545,6 +545,28 @@ def api_view_batch():
     if not data:
         return fail("未找到该批次", 404)
     return ok(data)
+
+
+@app.route("/api/views/batch/export", methods=["GET"])
+def api_view_batch_export():
+    sid = request.args.get("session_id")
+    if not sid:
+        return fail("请提供 session_id")
+    try:
+        blob = storage.batch_export_excel(int(sid))
+        session = storage.get_session(int(sid))
+    except ValueError as e:
+        return fail(str(e), 404)
+    except Exception as e:
+        return fail(f"导出失败：{e}", 500)
+    from io import BytesIO
+    import re
+    s = session or {}
+    base = f"batch_{s.get('exam_name', 'exam')}_{s.get('batch', '')}_{s.get('exam_date', '')}"
+    fname = re.sub(r'[^\w\-\.]+', '_', base) + ".xlsx"
+    return send_file(BytesIO(blob),
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name=fname)
 
 
 @app.route("/api/views/period", methods=["GET"])
