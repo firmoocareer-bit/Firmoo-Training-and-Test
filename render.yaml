@@ -13,7 +13,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 2 --worker-class gthread --threads 4 --timeout 120 --max-requests 1000 --max-requests-jitter 100
     healthCheckPath: /api/version
     envVars:
       - key: DATABASE_URL          # Neon 连接串（Postgres）；填在 Render 控制台

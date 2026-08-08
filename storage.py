@@ -672,6 +672,37 @@ class SQLiteStorage(BaseStorage):
         except Exception as _e:
             print(f"[migrate] recompute_score_rates skipped: {_e}")
 
+        # ---- 并发修复（2026-08）：唯一约束兜底，先清理历史脏数据再建索引 ----
+        # 1) 同一客服对同一试卷的重复 in_progress 行（双开竞态残留，无答案）：
+        #    仅保留最新一场，其余连同答案一并删除。
+        self.conn.execute(
+            "DELETE FROM exam_answers WHERE attempt_id IN ("
+            "SELECT attempt_id FROM exam_attempts WHERE status='in_progress' AND attempt_id NOT IN ("
+            "SELECT MAX(attempt_id) FROM exam_attempts WHERE status='in_progress' GROUP BY paper_id, rep_id))")
+        self.conn.execute(
+            "DELETE FROM exam_attempts WHERE status='in_progress' AND attempt_id NOT IN ("
+            "SELECT MAX(attempt_id) FROM exam_attempts WHERE status='in_progress' GROUP BY paper_id, rep_id)")
+        # 2) 重复 online session（并发提交双建，note 相同）：成绩改挂到最早 session 后删除多余行
+        for r in self._rows(self.conn.execute(
+                "SELECT note FROM exam_sessions WHERE note LIKE 'online:%' GROUP BY note HAVING COUNT(*)>1")):
+            note = r["note"]
+            keep = self._row(self.conn.execute(
+                "SELECT MIN(session_id) m FROM exam_sessions WHERE note=?", (note,)))["m"]
+            self.conn.execute(
+                "UPDATE exam_results SET session_id=? WHERE session_id IN "
+                "(SELECT session_id FROM exam_sessions WHERE note=? AND session_id<>?)",
+                (keep, note, keep))
+            self.conn.execute(
+                "DELETE FROM exam_sessions WHERE note=? AND session_id<>?", (note, keep))
+        # 3) 唯一索引（部分索引，SQLite/PG 语法一致）：同一客服同一试卷同时只能一场进行中；
+        #    同一 online 试卷 note 只能有一个 session（仅约束 online: 前缀，不误伤手工批次）。
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_attempt_inprog ON exam_attempts(paper_id, rep_id) "
+            "WHERE status='in_progress'")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_session_note ON exam_sessions(note) WHERE note LIKE 'online:%'")
+        self.conn.commit()
+
     def _seed_default_dimensions(self) -> None:
         c = self._row(self.conn.execute("SELECT COUNT(*) c FROM knowledge_dimensions"))["c"]
         if c == 0:
@@ -3470,12 +3501,16 @@ class SQLiteStorage(BaseStorage):
             "ORDER BY attempt_id DESC LIMIT 1", (paper_id, rep_id)))
         if ex:
             return ex
-        cur = self.conn.execute(
-            "INSERT INTO exam_attempts (paper_id, rep_id, start_time, status, created_at) "
+        # 并发修复：uq_attempt_inprog 唯一索引兜底，INSERT OR IGNORE 让并发双开时
+        # 后到者静默失败，随后回读已存在的进行中考试返回（保证同一客服同一试卷只有一场）。
+        self.conn.execute(
+            "INSERT OR IGNORE INTO exam_attempts (paper_id, rep_id, start_time, status, created_at) "
             "VALUES (?,?,?,?,?)",
             (paper_id, rep_id, now, "in_progress", now))
         self.conn.commit()
-        return self._row(self.conn.execute("SELECT * FROM exam_attempts WHERE attempt_id=?", (cur.lastrowid,)))
+        return self._row(self.conn.execute(
+            "SELECT * FROM exam_attempts WHERE paper_id=? AND rep_id=? AND status='in_progress' "
+            "ORDER BY attempt_id DESC LIMIT 1", (paper_id, rep_id)))
 
     def _norm_keys(self, val):
         """把答案（'A' / 'A,C' / '["A","C"]' / ['A','C']）统一成大写字母集合，便于多选题比较。"""
@@ -3553,11 +3588,19 @@ class SQLiteStorage(BaseStorage):
             "SELECT * FROM exam_sessions WHERE exam_name=? AND note=?",
             (paper["title"], f"online:paper_id={paper['paper_id']}")))
         if not session:
-            session = self.create_session({
-                "exam_name": paper["title"], "batch": paper.get("batch") or "online",
-                "exam_date": attempt["submit_time"][:10] if attempt["submit_time"] else _now()[:10],
-                "pass_score": paper["pass_score"], "exam_type": paper["exam_type"],
-                "note": f"online:paper_id={paper['paper_id']}"})
+            # 并发修复：uq_session_note 唯一索引兜底，INSERT OR IGNORE 让并发提交时
+            # 后到者静默失败，随后回读同一 session（保证同一 online 试卷只有一个 session）。
+            self.conn.execute(
+                "INSERT OR IGNORE INTO exam_sessions (exam_name, batch, exam_date, pass_score, exam_type, cycle_tag, note, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (paper["title"].strip(), (paper.get("batch") or "online").strip(),
+                 attempt["submit_time"][:10] if attempt["submit_time"] else _now()[:10],
+                 float(paper["pass_score"] or 60), paper["exam_type"], None,
+                 f"online:paper_id={paper['paper_id']}", _now()))
+            self.conn.commit()
+            session = self._row(self.conn.execute(
+                "SELECT * FROM exam_sessions WHERE exam_name=? AND note=?",
+                (paper["title"], f"online:paper_id={paper['paper_id']}")))
         subjects = {}
         for q in pq:
             a = ans_map.get(q["question_id"])
@@ -4298,6 +4341,34 @@ class PostgresStorage(SQLiteStorage):
         cur.execute("ALTER TABLE question_attachments ADD COLUMN IF NOT EXISTS data BYTEA")
         # 清理迁移前遗留的、只有磁盘路径而无二进制数据的孤儿附件（图片已无法读取）
         cur.execute("DELETE FROM question_attachments WHERE data IS NULL")
+        # ---- 并发修复（2026-08）：唯一约束兜底，先清理历史脏数据再建索引（与 SQLite _migrate 一致）----
+        # 1) 同一客服对同一试卷的重复 in_progress 行（双开竞态残留）：仅保留最新一场，其余连同答案删除。
+        cur.execute(
+            "DELETE FROM exam_answers WHERE attempt_id IN ("
+            "SELECT attempt_id FROM exam_attempts WHERE status='in_progress' AND attempt_id NOT IN ("
+            "SELECT MAX(attempt_id) FROM exam_attempts WHERE status='in_progress' GROUP BY paper_id, rep_id))")
+        cur.execute(
+            "DELETE FROM exam_attempts WHERE status='in_progress' AND attempt_id NOT IN ("
+            "SELECT MAX(attempt_id) FROM exam_attempts WHERE status='in_progress' GROUP BY paper_id, rep_id)")
+        # 2) 重复 online session（并发提交双建，note 相同）：成绩改挂到最早 session 后删除多余行
+        cur.execute(
+            "SELECT note FROM exam_sessions WHERE note LIKE 'online:%' GROUP BY note HAVING COUNT(*)>1")
+        for (note,) in cur.fetchall():
+            cur.execute(
+                "SELECT MIN(session_id) FROM exam_sessions WHERE note=%s", (note,))
+            keep = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE exam_results SET session_id=%s WHERE session_id IN "
+                "(SELECT session_id FROM exam_sessions WHERE note=%s AND session_id<>%s)",
+                (keep, note, keep))
+            cur.execute(
+                "DELETE FROM exam_sessions WHERE note=%s AND session_id<>%s", (note, keep))
+        # 3) 唯一索引（部分索引，SQLite/PG 语法一致）：仅约束 online 试卷 note，不误伤手工批次
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_attempt_inprog ON exam_attempts(paper_id, rep_id) "
+            "WHERE status='in_progress'")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_session_note ON exam_sessions(note) WHERE note LIKE 'online:%'")
         pg.commit()
         cur.close()
         pg.close()
